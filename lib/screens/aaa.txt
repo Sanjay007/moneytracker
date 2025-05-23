@@ -1,0 +1,374 @@
+import 'package:flutter/material.dart';
+
+class CategoryDetailScreen extends StatelessWidget {
+  final String categoryName;
+  final String categoryIcon;
+  final int transactionCount;
+  final double budgetAmount;
+  final double spentAmount;
+  final Color backgroundColor;
+  final List<TransactionItem> transactions;
+
+  const CategoryDetailScreen({
+    Key? key,
+    required this.categoryName,
+    required this.categoryIcon,
+    required this.transactionCount,
+    required this.budgetAmount,
+    required this.spentAmount,
+    required this.backgroundColor,
+    required this.transactions,
+  }) : super(key: key);
+
+  @override
+  Widget build(BuildContext context) {
+    final isOverBudget = spentAmount > budgetAmount;
+    final progressPercentage = spentAmount / budgetAmount;
+    
+    return Scaffold(
+      backgroundColor: Colors.grey[50],
+      body: Column(
+        children: [
+          // Header with colored background
+          Container(
+            width: double.infinity,
+            decoration: BoxDecoration(
+              color: backgroundColor,
+              borderRadius: const BorderRadius.only(
+                bottomLeft: Radius.circular(24),
+                bottomRight: Radius.circular(24),
+              ),
+            ),
+            child: SafeArea(
+              child: Padding(
+                padding: const EdgeInsets.all(20),
+                child: Column(
+                  children: [
+                    // Top navigation
+                    Row(
+                      children: [
+                        GestureDetector(
+                          onTap: () => Navigator.pop(context),
+                          child: const Icon(
+                            Icons.arrow_back_ios,
+                            color: Colors.black54,
+                            size: 20,
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        const Text(
+                          'Category detail',
+                          style: TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.w600,
+                            color: Colors.black87,
+                          ),
+                        ),
+                        const Spacer(),
+                        const Icon(
+                          Icons.settings,
+                          color: Colors.black54,
+                          size: 24,
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 30),
+                    
+                    // Category info
+                    Column(
+                      children: [
+                        Container(
+                          width: 60,
+                          height: 60,
+                          decoration: BoxDecoration(
+                            color: Colors.white.withOpacity(0.3),
+                            borderRadius: BorderRadius.circular(16),
+                          ),
+                          child: Center(
+                            child: Text(
+                              categoryIcon,
+                              style: const TextStyle(fontSize: 24),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        Text(
+                          categoryName,
+                          style: const TextStyle(
+                            fontSize: 20,
+                            fontWeight: FontWeight.w600,
+                            color: Colors.black87,
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          '$transactionCount transactions',
+                          style: const TextStyle(
+                            fontSize: 14,
+                            color: Colors.black54,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 20),
+                  ],
+                ),
+              ),
+            ),
+          ),
+          
+          // Content
+          Expanded(
+            child: Padding(
+              padding: const EdgeInsets.all(20),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  // Spending Breakdown
+                  Row(
+                    children: [
+                      const Text(
+                        'Spending Breakdown',
+                        style: TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.w600,
+                          color: Colors.black87,
+                        ),
+                      ),
+                      const Spacer(),
+                      const Text(
+                        'Adjust',
+                        style: TextStyle(
+                          fontSize: 14,
+                          color: Color(0xFF8B5CF6),
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                      const SizedBox(width: 4),
+                      const Icon(
+                        Icons.edit,
+                        size: 16,
+                        color: Color(0xFF8B5CF6),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 20),
+                  
+                  // Budget breakdown card
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(16),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(12),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.grey.withOpacity(0.05),
+                          spreadRadius: 1,
+                          blurRadius: 5,
+                          offset: const Offset(0, 2),
+                        ),
+                      ],
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        // Budget status
+                        if (isOverBudget) 
+                          Row(
+                            children: [
+                              Text(
+                                '\${(spentAmount - budgetAmount).toStringAsFixed(2)} over',
+                                style: const TextStyle(
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.w600,
+                                  color: Colors.black87,
+                                ),
+                              ),
+                              const Spacer(),
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                decoration: BoxDecoration(
+                                  color: Colors.orange.withOpacity(0.1),
+                                  borderRadius: BorderRadius.circular(12),
+                                ),
+                                child: const Text(
+                                  'LIMIT EXCEEDED',
+                                  style: TextStyle(
+                                    fontSize: 10,
+                                    fontWeight: FontWeight.w600,
+                                    color: Colors.orange,
+                                    letterSpacing: 0.5,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        
+                        const SizedBox(height: 12),
+                        
+                        // Progress bar
+                        Container(
+                          height: 6,
+                          decoration: BoxDecoration(
+                            color: Colors.grey.withOpacity(0.2),
+                            borderRadius: BorderRadius.circular(3),
+                          ),
+                          child: FractionallySizedBox(
+                            alignment: Alignment.centerLeft,
+                            widthFactor: progressPercentage.clamp(0.0, 1.0),
+                            child: Container(
+                              decoration: BoxDecoration(
+                                color: isOverBudget ? Colors.orange : const Color(0xFF8B5CF6),
+                                borderRadius: BorderRadius.circular(3),
+                              ),
+                            ),
+                          ),
+                        ),
+                        
+                        const SizedBox(height: 12),
+                        
+                        // Budget amount
+                        Text(
+                          '\${spentAmount.toStringAsFixed(0)} of \${budgetAmount.toStringAsFixed(0)}',
+                          style: const TextStyle(
+                            fontSize: 14,
+                            color: Colors.grey,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  
+                  const SizedBox(height: 30),
+                  
+                  // Transactions
+                  const Text(
+                    'Transactions',
+                    style: TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.w600,
+                      color: Colors.black87,
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  
+                  // Transaction list
+                  Expanded(
+                    child: ListView.separated(
+                      itemCount: transactions.length,
+                      separatorBuilder: (context, index) => const SizedBox(height: 12),
+                      itemBuilder: (context, index) {
+                        final transaction = transactions[index];
+                        return Container(
+                          padding: const EdgeInsets.all(16),
+                          decoration: BoxDecoration(
+                            color: Colors.white,
+                            borderRadius: BorderRadius.circular(12),
+                            boxShadow: [
+                              BoxShadow(
+                                color: Colors.grey.withOpacity(0.05),
+                                spreadRadius: 1,
+                                blurRadius: 5,
+                                offset: const Offset(0, 2),
+                              ),
+                            ],
+                          ),
+                          child: Row(
+                            children: [
+                              Container(
+                                width: 40,
+                                height: 40,
+                                decoration: BoxDecoration(
+                                  color: transaction.iconBackgroundColor,
+                                  borderRadius: BorderRadius.circular(12),
+                                ),
+                                child: Center(
+                                  child: transaction.iconWidget,
+                                ),
+                              ),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: Text(
+                                  transaction.title,
+                                  style: const TextStyle(
+                                    fontSize: 16,
+                                    fontWeight: FontWeight.w500,
+                                    color: Colors.black87,
+                                  ),
+                                ),
+                              ),
+                              Text(
+                                '-\$${transaction.amount.toStringAsFixed(2)}',
+                                style: const TextStyle(
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.w600,
+                                  color: Colors.black87,
+                                ),
+                              ),
+                            ],
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class TransactionItem {
+  final String title;
+  final double amount;
+  final Widget iconWidget;
+  final Color iconBackgroundColor;
+
+  TransactionItem({
+    required this.title,
+    required this.amount,
+    required this.iconWidget,
+    required this.iconBackgroundColor,
+  });
+}
+
+// Example usage
+class CategoryDetailDemo extends StatelessWidget {
+  const CategoryDetailDemo({Key? key}) : super(key: key);
+
+  @override
+  Widget build(BuildContext context) {
+    return CategoryDetailScreen(
+      categoryName: 'Charity',
+      categoryIcon: '❤️',
+      transactionCount: 3,
+      budgetAmount: 1000,
+      spentAmount: 1250,
+      backgroundColor: const Color(0xFFFFE4E6), // Light pink background
+      transactions: [
+        TransactionItem(
+          title: 'Fitness first',
+          amount: 50.00,
+          iconWidget: const Text('💪', style: TextStyle(fontSize: 20)),
+          iconBackgroundColor: Colors.red.withOpacity(0.1),
+        ),
+        TransactionItem(
+          title: 'Transfer wise',
+          amount: 700.00,
+          iconWidget: const Icon(Icons.north_east, color: Colors.grey, size: 20),
+          iconBackgroundColor: Colors.grey.withOpacity(0.1),
+        ),
+        TransactionItem(
+          title: 'Transfer wise',
+          amount: 500.00,
+          iconWidget: const Icon(Icons.north_east, color: Colors.grey, size: 20),
+          iconBackgroundColor: Colors.grey.withOpacity(0.1),
+        ),
+      ],
+    );
+  }
+}
