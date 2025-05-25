@@ -8,7 +8,9 @@ import 'package:moneytracker/widgets/budget_progress_widget.dart';
 import 'package:moneytracker/models/transaction.dart';
 import 'package:moneytracker/models/budget_category.dart';
 import 'package:moneytracker/models/account.dart';
+import 'package:moneytracker/models/database_models.dart';
 import 'package:moneytracker/services/account_service.dart';
+import 'package:moneytracker/services/database_service.dart';
 import 'package:intl/intl.dart';
 import 'package:moneytracker/screens/sms/sms_transactions_screen.dart';
 
@@ -19,8 +21,11 @@ class DashboardScreen extends StatefulWidget {
 
 class _DashboardScreenState extends State<DashboardScreen> {
   final AccountService _accountService = AccountService();
+  final DatabaseService _databaseService = DatabaseService.instance;
   Account? _currentAccount;
   bool _isLoadingAccount = true;
+  List<TransactionDB> _todayTransactions = [];
+  bool _isLoadingTransactions = true;
   
   // Sample categories data
   final List<BudgetCategory> _categories = [
@@ -136,6 +141,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   void initState() {
     super.initState();
     _checkAccountSetup();
+    _loadTodayTransactions();
   }
 
   Future<void> _checkAccountSetup() async {
@@ -437,10 +443,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
                               fontWeight: FontWeight.w500,
                             ),
                           ),
-                          Text(
+                      Text(
                             _currentAccount!.maskedAccountNumber,
                             style: GoogleFonts.roboto(
-                              color: Colors.white70,
+                          color: Colors.white70,
                               fontSize: 12,
                             ),
                           ),
@@ -464,7 +470,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                             ),
                           ),
                           SizedBox(width: 8),
-                          Icon(Icons.more_horiz, color: Colors.white70),
+                      Icon(Icons.more_horiz, color: Colors.white70),
                         ],
                       ),
                     ],
@@ -564,9 +570,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   ElevatedButton(
                     onPressed: () {
                       Navigator.push(
-                        context,
-                        MaterialPageRoute(builder: (context) => SetBudgetScreen()),
-                      );
+        context,
+        MaterialPageRoute(builder: (context) => SetBudgetScreen()),
+      );
                     },
                     style: ElevatedButton.styleFrom(
                       backgroundColor: Color(0xFF6C5CE7),
@@ -585,13 +591,25 @@ class _DashboardScreenState extends State<DashboardScreen> {
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
                 Text(
-                  'Transactions',
-                  style: GoogleFonts.montserrat(
+                      'Today\'s Transactions',
+                      style: GoogleFonts.montserrat(
                     fontSize: 18,
                     fontWeight: FontWeight.w600,
                     color: Colors.black87,
                   ),
+                    ),
+                    Text(
+                      DateFormat('EEEE, MMM dd, yyyy').format(DateTime.now()),
+                      style: GoogleFonts.montserrat(
+                        fontSize: 12,
+                        color: Colors.grey[600],
+                      ),
+                    ),
+                  ],
                 ),
                 TextButton(
                   onPressed: () {},
@@ -605,7 +623,54 @@ class _DashboardScreenState extends State<DashboardScreen> {
               ],
             ),
             SizedBox(height: 16),
-            ..._transactions.map((transaction) => _buildTransactionItem(transaction)),
+            // Today's Transactions List
+            _isLoadingTransactions
+                ? Center(
+                    child: Padding(
+                      padding: EdgeInsets.all(20),
+                      child: CircularProgressIndicator(
+                        color: Color(0xFF6C5CE7),
+                      ),
+                    ),
+                  )
+                : _todayTransactions.isEmpty
+                    ? Container(
+                        padding: EdgeInsets.all(20),
+                        decoration: BoxDecoration(
+                          color: Colors.grey[50],
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(color: Colors.grey[200]!),
+                        ),
+                        child: Column(
+                          children: [
+                            Icon(
+                              Icons.receipt_long_outlined,
+                              size: 48,
+                              color: Colors.grey[400],
+                            ),
+                            SizedBox(height: 8),
+                            Text(
+                              'No transactions today',
+                              style: GoogleFonts.montserrat(
+                                fontSize: 16,
+                                fontWeight: FontWeight.w500,
+                                color: Colors.grey[600],
+                              ),
+                            ),
+                            SizedBox(height: 4),
+                            Text(
+                              'Your daily transactions will appear here',
+                              style: GoogleFonts.montserrat(
+                                fontSize: 14,
+                                color: Colors.grey[500],
+                              ),
+                            ),
+                          ],
+                        ),
+                      )
+                    : Column(
+                        children: _todayTransactions.map((transaction) => _buildDatabaseTransactionItem(transaction)).toList(),
+            ),
           ],
         ),
       ),
@@ -869,5 +934,133 @@ class _DashboardScreenState extends State<DashboardScreen> {
         );
       }
     }
+  }
+
+  Future<void> _loadTodayTransactions() async {
+    setState(() => _isLoadingTransactions = true);
+    
+    try {
+      final transactions = await _databaseService.getTransactionsForToday();
+      setState(() {
+        _todayTransactions = transactions;
+      });
+    } catch (e) {
+      print('Error loading today\'s transactions: $e');
+      // Keep empty list if error occurs
+      setState(() {
+        _todayTransactions = [];
+      });
+    } finally {
+      setState(() => _isLoadingTransactions = false);
+    }
+  }
+
+  Widget _buildDatabaseTransactionItem(TransactionDB transaction) {
+    final Color textColor = transaction.type == 'debit' ? Colors.red : Colors.green;
+    final String amountText = transaction.type == 'debit' 
+        ? '-₹${transaction.amount.toStringAsFixed(2)}'
+        : '+₹${transaction.amount.toStringAsFixed(2)}';
+    
+    return Container(
+      margin: EdgeInsets.only(bottom: 12),
+      padding: EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.05),
+            blurRadius: 5,
+            offset: Offset(0, 1),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+        children: [
+          Container(
+            padding: EdgeInsets.all(8),
+            decoration: BoxDecoration(
+                  color: Color(transaction.categoryColorValue).withOpacity(0.1),
+              borderRadius: BorderRadius.circular(8),
+            ),
+                child: Icon(
+                  IconData(transaction.categoryIconCodePoint, fontFamily: 'MaterialIcons'),
+                  color: Color(transaction.categoryColorValue),
+                  size: 20,
+                ),
+          ),
+          SizedBox(width: 12),
+          Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      transaction.categoryName,
+                      style: GoogleFonts.montserrat(
+                fontWeight: FontWeight.w500,
+                fontSize: 16,
+                        color: Color(0xFF6C5CE7),
+                      ),
+                    ),
+                    SizedBox(height: 4),
+                    Text(
+                      transaction.remarks,
+                      style: GoogleFonts.montserrat(
+                        color: Colors.grey[600],
+                        fontSize: 14,
+                      ),
+                    ),
+                    if (transaction.merchant != null) ...[
+                      SizedBox(height: 2),
+                      Text(
+                        'at ${transaction.merchant}',
+                        style: GoogleFonts.montserrat(
+                          color: Colors.grey[500],
+                          fontSize: 12,
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+              Text(
+                amountText,
+                style: GoogleFonts.montserrat(
+                  fontWeight: FontWeight.w600,
+                  fontSize: 16,
+                  color: textColor,
+                ),
+              ),
+            ],
+          ),
+          SizedBox(height: 10),
+          Divider(height: 1, color: Colors.grey[200]),
+          SizedBox(height: 10),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              if (transaction.referenceNumber != null)
+                Text(
+                  'Ref: ${transaction.referenceNumber}',
+                  style: GoogleFonts.montserrat(
+                    fontSize: 12,
+                    color: Colors.grey[500],
+            ),
+          ),
+          Text(
+                DateFormat('hh:mm a').format(transaction.date),
+                style: GoogleFonts.montserrat(
+                  fontSize: 12,
+                  color: Colors.grey[600],
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
   }
 }

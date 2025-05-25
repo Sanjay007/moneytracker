@@ -1,8 +1,80 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:moneytracker/screens/splash_screen.dart';
+import 'package:moneytracker/services/database_service.dart';
+import 'package:moneytracker/models/database_models.dart';
+import 'package:intl/intl.dart';
 
-void main() {
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  
+  // Initialize SQLite Database
+  try {
+    await DatabaseService.instance.initDatabase();
+    print('✅ Database initialized successfully');
+    
+    // Clear and create fresh demo data for testing
+    try {
+      // Clear existing demo data (optional - for fresh start)
+      await DatabaseService.instance.dispose();
+      await DatabaseService.instance.initDatabase();
+    } catch (e) {
+      print('Note: Could not clear existing data, continuing with fresh data creation');
+    }
+    
+    // Create demo data for testing
+    await DatabaseService.instance.createDemoData();
+    print('✅ Demo data created successfully');
+    
+    // Verify data was added
+    final accounts = await DatabaseService.instance.getAllAccounts();
+    final todayTransactions = await DatabaseService.instance.getTransactionsForToday();
+    final categories = await DatabaseService.instance.getAllCategories();
+    final smsTransactions = await DatabaseService.instance.getAllSmsTransactions();
+    
+    print('Database Test Results:');
+    print('  - Accounts: ${accounts.length}');
+    print('  - Today\'s Transactions: ${todayTransactions.length}');
+    print('  - Categories: ${categories.length}');
+    print('  - SMS Transactions: ${smsTransactions.length}');
+    
+    for (final transaction in todayTransactions) {
+      print('  - ${transaction.type.toUpperCase()}: ₹${transaction.amount} - ${transaction.remarks}');
+    }
+    
+    // Show SMS transaction summary
+    final todaySms = await DatabaseService.instance.getSmsTransactionsByDate(DateTime.now());
+    print('  - Today\'s SMS Transactions: ${todaySms.length}');
+    for (final sms in todaySms) {
+      print('    - ${sms.transactionType}: ${sms.formattedAmount} at ${sms.merchant} (${sms.status})');
+    }
+    
+    // Show SMS transactions by date for better debugging
+    print('\nSMS Transactions by Date:');
+    final allSms = await DatabaseService.instance.getAllSmsTransactions();
+    final Map<String, List<SmsTransactionDB>> smsByDate = {};
+    
+    for (final sms in allSms) {
+      final dateKey = DateFormat('yyyy-MM-dd').format(sms.date);
+      if (!smsByDate.containsKey(dateKey)) {
+        smsByDate[dateKey] = [];
+      }
+      smsByDate[dateKey]!.add(sms);
+    }
+    
+    for (final entry in smsByDate.entries) {
+      final dateStr = DateFormat('MMM dd, yyyy').format(DateTime.parse(entry.key + 'T00:00:00'));
+      print('  📅 $dateStr: ${entry.value.length} transactions');
+      for (final sms in entry.value) {
+        print('    - ${DateFormat('hh:mm a').format(sms.date)}: ${sms.transactionType} ${sms.formattedAmount} at ${sms.merchant} (${sms.status})');
+      }
+    }
+    
+    print('✅ SQLite DB setup with SMS transactions is working perfectly!');
+  } catch (e) {
+    print('❌ Error with database setup: $e');
+  }
+  
   runApp(const MyApp());
 }
 

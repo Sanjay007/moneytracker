@@ -1,9 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
-import '../../models/sms_transaction.dart';
+import 'package:intl/intl.dart';
 import '../../models/account.dart';
+import '../../models/database_models.dart';
 import '../../services/sms_reader_service.dart';
 import '../../services/account_service.dart';
+import '../../services/database_service.dart';
 
 class SmsTransactionsScreen extends StatefulWidget {
   @override
@@ -13,13 +15,17 @@ class SmsTransactionsScreen extends StatefulWidget {
 class _SmsTransactionsScreenState extends State<SmsTransactionsScreen> {
   final SmsReaderService _smsService = SmsReaderService();
   final AccountService _accountService = AccountService();
+  final DatabaseService _databaseService = DatabaseService.instance;
   
-  List<SmsTransaction> _transactions = [];
-  List<SmsTransaction> _allTransactions = [];
+  List<SmsTransactionDB> _transactions = [];
+  List<SmsTransactionDB> _allTransactions = [];
   Account? _currentAccount;
   bool _isLoading = false;
   bool _hasPermission = false;
+  bool _hasDatabaseTransactions = false; // Track if we have database transactions
   String _filter = 'pending'; // 'all', 'pending', 'accepted', 'rejected'
+  DateTime _selectedDate = DateTime.now(); // Add selected date for filtering
+  Map<String, List<SmsTransactionDB>> _transactionsByDate = {}; // Group transactions by date
 
   @override
   void initState() {
@@ -35,19 +41,20 @@ class _SmsTransactionsScreenState extends State<SmsTransactionsScreen> {
       });
       
       if (account != null) {
-        _checkPermissionAndLoadTransactions();
+        await _loadTransactions();
       }
     } catch (e) {
       _showErrorDialog('Error loading account: $e');
     }
   }
 
-  Future<void> _checkPermissionAndLoadTransactions() async {
+  Future<void> _loadTransactions() async {
     if (_currentAccount == null) return;
     
     setState(() => _isLoading = true);
     
     try {
+      // First check for SMS permission and try to load real SMS data
       _hasPermission = await _smsService.hasSmsPermission();
       
       if (!_hasPermission) {
@@ -55,46 +62,117 @@ class _SmsTransactionsScreenState extends State<SmsTransactionsScreen> {
       }
       
       if (_hasPermission) {
-        await _loadTransactions();
+        // Load real SMS transactions
+        setState(() {
+          _hasDatabaseTransactions = false;
+        });
+        print('📱 Loading real SMS transactions for account: ${_currentAccount!.accountNumber}');
+        await _loadSmsTransactions();
+      } else {
+        // Fallback to demo data only if SMS permission is denied
+        print('⚠️ SMS permission denied, falling back to demo data');
+        final dbTransactions = await _databaseService.getAllSmsTransactions();
+        
+        if (dbTransactions.isNotEmpty) {
+          setState(() {
+            _hasDatabaseTransactions = true;
+          });
+          await _processTransactions(dbTransactions);
+        } else {
+          // No demo data and no SMS permission
+          setState(() {
+            _allTransactions = [];
+            _transactions = [];
+            _transactionsByDate = {};
+          });
+        }
       }
     } catch (e) {
+      print('❌ Error loading transactions: $e');
       _showErrorDialog('Error: $e');
     }
     
     setState(() => _isLoading = false);
   }
 
-  Future<void> _loadTransactions() async {
+  Future<void> _loadSmsTransactions() async {
     if (_currentAccount == null) return;
     
     try {
       final transactions = await _smsService.getTransactionsForAccount(_currentAccount!.accountNumber);
-      setState(() {
-        _allTransactions = transactions;
-        _applyFilter();
-      });
+      
+      // Convert SmsTransaction to SmsTransactionDB for consistency
+      final dbTransactions = transactions.map((t) => SmsTransactionDB(
+        id: t.id,
+        rawMessage: t.message,
+        bankName: t.bankName,
+        accountNumber: t.accountNumber,
+        amount: t.amount,
+        transactionType: t.transactionType,
+        date: t.date,
+        merchant: t.merchant,
+        referenceNumber: t.referenceNumber,
+        userRemarks: t.userRemarks,
+        status: t.status,
+      )).toList();
+      
+      await _processTransactions(dbTransactions);
     } catch (e) {
       _showErrorDialog('Failed to load transactions: $e');
     }
   }
 
+  Future<void> _processTransactions(List<SmsTransactionDB> transactions) async {
+    // Group transactions by date
+    _transactionsByDate.clear();
+    for (final transaction in transactions) {
+      final dateKey = DateFormat('yyyy-MM-dd').format(transaction.date);
+      if (!_transactionsByDate.containsKey(dateKey)) {
+        _transactionsByDate[dateKey] = [];
+      }
+      _transactionsByDate[dateKey]!.add(transaction);
+    }
+    
+    setState(() {
+      _allTransactions = transactions;
+    });
+
+    // Check if current date has transactions, if not, switch to most recent date with data
+    final currentDateKey = DateFormat('yyyy-MM-dd').format(_selectedDate);
+    if (_transactionsByDate[currentDateKey] == null || _transactionsByDate[currentDateKey]!.isEmpty) {
+      final mostRecentDate = await _databaseService.getMostRecentSmsTransactionDate();
+      if (mostRecentDate != null) {
+        setState(() {
+          _selectedDate = mostRecentDate;
+        });
+      }
+    }
+
+    _applyFilter();
+  }
+
   void _applyFilter() {
+    // First filter by date
+    final selectedDateKey = DateFormat('yyyy-MM-dd').format(_selectedDate);
+    final transactionsForSelectedDate = _transactionsByDate[selectedDateKey] ?? [];
+    
+    // Then apply status filter
     switch (_filter) {
       case 'pending':
-        _transactions = _allTransactions.where((t) => t.isPending).toList();
+        _transactions = transactionsForSelectedDate.where((t) => t.isPending).toList();
         break;
       case 'accepted':
-        _transactions = _allTransactions.where((t) => t.isAccepted).toList();
+        _transactions = transactionsForSelectedDate.where((t) => t.isAccepted).toList();
         break;
       case 'rejected':
-        _transactions = _allTransactions.where((t) => t.isRejected).toList();
+        _transactions = transactionsForSelectedDate.where((t) => t.isRejected).toList();
         break;
       default:
-        _transactions = _allTransactions;
+        _transactions = transactionsForSelectedDate;
     }
   }
 
-  void _updateTransactionStatus(SmsTransaction transaction, String newStatus, String? remarks) {
+  void _updateTransactionStatus(SmsTransactionDB transaction, String newStatus, String? remarks) {
     setState(() {
       final index = _allTransactions.indexWhere((t) => t.id == transaction.id);
       if (index != -1) {
@@ -107,7 +185,7 @@ class _SmsTransactionsScreenState extends State<SmsTransactionsScreen> {
     });
   }
 
-  void _showAddRemarksDialog(SmsTransaction transaction) {
+  void _showAddRemarksDialog(SmsTransactionDB transaction) {
     final TextEditingController remarksController = TextEditingController(
       text: transaction.userRemarks ?? ''
     );
@@ -179,7 +257,7 @@ class _SmsTransactionsScreenState extends State<SmsTransactionsScreen> {
     );
   }
 
-  void _showConfirmationDialog(SmsTransaction transaction, String action) {
+  void _showConfirmationDialog(SmsTransactionDB transaction, String action) {
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
@@ -237,6 +315,51 @@ class _SmsTransactionsScreenState extends State<SmsTransactionsScreen> {
     );
   }
 
+  Future<void> _showDatePicker() async {
+    final DateTime? picked = await showDatePicker(
+      context: context,
+      initialDate: _selectedDate,
+      firstDate: DateTime.now().subtract(Duration(days: 365)),
+      lastDate: DateTime.now(),
+      builder: (context, child) {
+        return Theme(
+          data: Theme.of(context).copyWith(
+            colorScheme: ColorScheme.light(
+              primary: Color(0xFF6C5CE7),
+              onPrimary: Colors.white,
+              surface: Colors.white,
+              onSurface: Colors.black,
+            ),
+          ),
+          child: child!,
+        );
+      },
+    );
+    
+    if (picked != null && picked != _selectedDate) {
+      setState(() {
+        _selectedDate = picked;
+        _applyFilter();
+      });
+    }
+  }
+
+  List<SmsTransactionDB> _getFilteredTransactionsByStatus(String status) {
+    final selectedDateKey = DateFormat('yyyy-MM-dd').format(_selectedDate);
+    final transactionsForSelectedDate = _transactionsByDate[selectedDateKey] ?? [];
+    
+    switch (status) {
+      case 'pending':
+        return transactionsForSelectedDate.where((t) => t.isPending).toList();
+      case 'accepted':
+        return transactionsForSelectedDate.where((t) => t.isAccepted).toList();
+      case 'rejected':
+        return transactionsForSelectedDate.where((t) => t.isRejected).toList();
+      default:
+        return transactionsForSelectedDate;
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -272,17 +395,17 @@ class _SmsTransactionsScreenState extends State<SmsTransactionsScreen> {
         actions: [
           IconButton(
             icon: Icon(Icons.refresh, color: Colors.black54),
-            onPressed: _checkPermissionAndLoadTransactions,
+            onPressed: _loadTransactions,
           ),
         ],
       ),
       body: _currentAccount == null
           ? _buildNoAccountView()
-          : !_hasPermission
-              ? _buildPermissionDeniedView()
-              : _isLoading
-                  ? _buildLoadingView()
-                  : _buildTransactionsList(),
+          : _isLoading
+              ? _buildLoadingView()
+              : _hasDatabaseTransactions || _hasPermission
+                  ? _buildTransactionsList()
+                  : _buildPermissionDeniedView(),
     );
   }
 
@@ -338,7 +461,9 @@ class _SmsTransactionsScreenState extends State<SmsTransactionsScreen> {
             ),
             SizedBox(height: 20),
             Text(
-              'SMS Permission Required',
+              _hasDatabaseTransactions 
+                  ? 'Loading Transactions...'
+                  : 'SMS Permission Required',
               style: GoogleFonts.roboto(
                 fontSize: 24,
                 fontWeight: FontWeight.bold,
@@ -348,7 +473,9 @@ class _SmsTransactionsScreenState extends State<SmsTransactionsScreen> {
             ),
             SizedBox(height: 10),
             Text(
-              'To read bank transaction SMS messages, please grant SMS permission.',
+              _hasDatabaseTransactions
+                  ? 'Demo transactions are available. Please wait while we load them.'
+                  : 'To read bank transaction SMS messages, please grant SMS permission.',
               style: GoogleFonts.roboto(
                 fontSize: 16,
                 color: Colors.grey[600],
@@ -358,7 +485,7 @@ class _SmsTransactionsScreenState extends State<SmsTransactionsScreen> {
             ),
             SizedBox(height: 30),
             ElevatedButton(
-              onPressed: _checkPermissionAndLoadTransactions,
+              onPressed: _loadTransactions,
               style: ElevatedButton.styleFrom(
                 backgroundColor: Color(0xFF6C5CE7),
                 foregroundColor: Colors.white,
@@ -368,7 +495,7 @@ class _SmsTransactionsScreenState extends State<SmsTransactionsScreen> {
                 ),
               ),
               child: Text(
-                'Grant Permission',
+                _hasDatabaseTransactions ? 'Reload Transactions' : 'Grant Permission',
                 style: GoogleFonts.roboto(
                   fontSize: 16,
                   fontWeight: FontWeight.w600,
@@ -405,20 +532,103 @@ class _SmsTransactionsScreenState extends State<SmsTransactionsScreen> {
   Widget _buildTransactionsList() {
     return Column(
       children: [
-        // Filter buttons
+        // Date selector
         Container(
           padding: EdgeInsets.all(16),
+          child: Row(
+            children: [
+              Expanded(
+                child: GestureDetector(
+                  onTap: _showDatePicker,
+                  child: Container(
+                    padding: EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      border: Border.all(color: Color(0xFF6C5CE7)),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Row(
+                      children: [
+                        Icon(Icons.calendar_today, color: Color(0xFF6C5CE7), size: 18),
+                        SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            DateFormat('EEEE, MMM dd, yyyy').format(_selectedDate),
+                            style: GoogleFonts.roboto(
+                              fontSize: 14,
+                              fontWeight: FontWeight.w500,
+                              color: Colors.black87,
+                            ),
+                          ),
+                        ),
+                        Icon(Icons.arrow_drop_down, color: Color(0xFF6C5CE7)),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+              SizedBox(width: 12),
+              // Date navigation buttons
+              Row(
+                children: [
+                  GestureDetector(
+                    onTap: () {
+                      setState(() {
+                        _selectedDate = _selectedDate.subtract(Duration(days: 1));
+                        _applyFilter();
+                      });
+                    },
+                    child: Container(
+                      padding: EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        border: Border.all(color: Colors.grey[300]!),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Icon(Icons.chevron_left, color: Colors.grey[600], size: 18),
+                    ),
+                  ),
+                  SizedBox(width: 4),
+                  GestureDetector(
+                    onTap: () {
+                      final tomorrow = _selectedDate.add(Duration(days: 1));
+                      if (tomorrow.isBefore(DateTime.now().add(Duration(days: 1)))) {
+                        setState(() {
+                          _selectedDate = tomorrow;
+                          _applyFilter();
+                        });
+                      }
+                    },
+                    child: Container(
+                      padding: EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        border: Border.all(color: Colors.grey[300]!),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Icon(Icons.chevron_right, color: Colors.grey[600], size: 18),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+        
+        // Filter buttons
+        Container(
+          padding: EdgeInsets.symmetric(horizontal: 16),
           child: SingleChildScrollView(
             scrollDirection: Axis.horizontal,
             child: Row(
               children: [
-                _buildFilterChip('Pending', 'pending', _allTransactions.where((t) => t.isPending).length),
+                _buildFilterChip('Pending', 'pending', _getFilteredTransactionsByStatus('pending').length),
                 SizedBox(width: 8),
-                _buildFilterChip('Accepted', 'accepted', _allTransactions.where((t) => t.isAccepted).length),
+                _buildFilterChip('Accepted', 'accepted', _getFilteredTransactionsByStatus('accepted').length),
                 SizedBox(width: 8),
-                _buildFilterChip('Rejected', 'rejected', _allTransactions.where((t) => t.isRejected).length),
+                _buildFilterChip('Rejected', 'rejected', _getFilteredTransactionsByStatus('rejected').length),
                 SizedBox(width: 8),
-                _buildFilterChip('All', 'all', _allTransactions.length),
+                _buildFilterChip('All', 'all', _getFilteredTransactionsByStatus('all').length),
               ],
             ),
           ),
@@ -426,11 +636,11 @@ class _SmsTransactionsScreenState extends State<SmsTransactionsScreen> {
 
         // Transactions count
         Padding(
-          padding: EdgeInsets.symmetric(horizontal: 16),
+          padding: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
           child: Row(
             children: [
               Text(
-                '${_transactions.length} transactions found',
+                '${_transactions.length} transactions found for ${DateFormat('MMM dd, yyyy').format(_selectedDate)}',
                 style: GoogleFonts.roboto(
                   fontSize: 14,
                   color: Colors.grey[600],
@@ -509,6 +719,8 @@ class _SmsTransactionsScreenState extends State<SmsTransactionsScreen> {
   }
 
   Widget _buildEmptyView() {
+    final hasDataOnOtherDates = _allTransactions.isNotEmpty;
+    
     return Center(
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
@@ -520,7 +732,9 @@ class _SmsTransactionsScreenState extends State<SmsTransactionsScreen> {
           ),
           SizedBox(height: 20),
           Text(
-            'No transactions found',
+            hasDataOnOtherDates 
+                ? 'No transactions for this date'
+                : 'No transactions found',
             style: GoogleFonts.roboto(
               fontSize: 18,
               fontWeight: FontWeight.w500,
@@ -529,18 +743,45 @@ class _SmsTransactionsScreenState extends State<SmsTransactionsScreen> {
           ),
           SizedBox(height: 8),
           Text(
-            'No ${_filter == 'all' ? '' : _filter + ' '}transactions found for this account.',
+            hasDataOnOtherDates
+                ? 'No ${_filter == 'all' ? '' : _filter + ' '}transactions found for ${DateFormat('MMM dd, yyyy').format(_selectedDate)}.'
+                : 'No ${_filter == 'all' ? '' : _filter + ' '}transactions found for this account.',
             style: GoogleFonts.roboto(
               fontSize: 14,
               color: Colors.grey[500],
             ),
+            textAlign: TextAlign.center,
           ),
+          if (hasDataOnOtherDates) ...[
+            SizedBox(height: 20),
+            ElevatedButton.icon(
+              onPressed: () async {
+                final mostRecentDate = await _databaseService.getMostRecentSmsTransactionDate();
+                if (mostRecentDate != null) {
+                  setState(() {
+                    _selectedDate = mostRecentDate;
+                    _applyFilter();
+                  });
+                }
+              },
+              icon: Icon(Icons.history, size: 18),
+              label: Text('Show Recent Transactions'),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Color(0xFF6C5CE7),
+                foregroundColor: Colors.white,
+                padding: EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
+              ),
+            ),
+          ],
         ],
       ),
     );
   }
 
-  Widget _buildTransactionCard(SmsTransaction transaction) {
+  Widget _buildTransactionCard(SmsTransactionDB transaction) {
     Color statusColor = Colors.orange;
     IconData statusIcon = Icons.schedule;
     
@@ -580,7 +821,7 @@ class _SmsTransactionsScreenState extends State<SmsTransactionsScreen> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      transaction.bankName,
+                      transaction.bankName ?? 'Unknown Bank',
                       style: GoogleFonts.roboto(
                         fontSize: 16,
                         fontWeight: FontWeight.w600,
@@ -795,7 +1036,7 @@ class _SmsTransactionsScreenState extends State<SmsTransactionsScreen> {
                   borderRadius: BorderRadius.circular(8),
                 ),
                 child: Text(
-                  transaction.message,
+                  transaction.rawMessage,
                   style: GoogleFonts.roboto(
                     fontSize: 12,
                     color: Colors.grey[700],

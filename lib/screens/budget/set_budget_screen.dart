@@ -214,30 +214,30 @@ class _SetBudgetScreenState extends State<SetBudgetScreen> {
         ),
       ),
       body: SingleChildScrollView(
-        padding: EdgeInsets.all(20),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
+          padding: EdgeInsets.all(20),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
             if (widget.isAccountSetup || widget.accountToEdit != null) ...[
               // Account Setup Section
-              Text(
+                    Text(
                 widget.accountToEdit != null 
                     ? 'Edit your bank account' 
                     : 'Set up your bank account',
                 style: GoogleFonts.roboto(
                   fontSize: 24,
-                  fontWeight: FontWeight.bold,
-                  color: Colors.black87,
-                ),
-              ),
-              SizedBox(height: 8),
-              Text(
+                        fontWeight: FontWeight.bold,
+                        color: Colors.black87,
+                      ),
+                    ),
+                    SizedBox(height: 8),
+                    Text(
                 widget.accountToEdit != null
                     ? 'Update your bank account details'
                     : 'Enter your bank details to get started with budget tracking',
                 style: GoogleFonts.roboto(
-                  fontSize: 16,
-                  color: Colors.grey[600],
+                        fontSize: 16,
+                        color: Colors.grey[600],
                   height: 1.5,
                 ),
               ),
@@ -310,7 +310,7 @@ class _SetBudgetScreenState extends State<SetBudgetScreen> {
                         backgroundColor: Color(0xFF6C5CE7),
                         foregroundColor: Colors.white,
                         shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12),
+                        borderRadius: BorderRadius.circular(12),
                         ),
                         padding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                         minimumSize: Size(0, 0),
@@ -378,18 +378,18 @@ class _SetBudgetScreenState extends State<SetBudgetScreen> {
   }) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
+                children: [
+                  Text(
           label,
           style: GoogleFonts.roboto(
             fontSize: 16,
-            fontWeight: FontWeight.w600,
-            color: Colors.black87,
-          ),
-        ),
+                      fontWeight: FontWeight.w600,
+                      color: Colors.black87,
+                    ),
+                  ),
         SizedBox(height: 8),
         Container(
-          decoration: BoxDecoration(
+                      decoration: BoxDecoration(
             color: Colors.white,
             borderRadius: BorderRadius.circular(12),
             boxShadow: [
@@ -411,7 +411,7 @@ class _SetBudgetScreenState extends State<SetBudgetScreen> {
               prefixStyle: GoogleFonts.roboto(
                 fontSize: 16,
                 color: Colors.black87,
-                fontWeight: FontWeight.w500,
+                          fontWeight: FontWeight.w500,
               ),
               border: OutlineInputBorder(
                 borderRadius: BorderRadius.circular(12),
@@ -425,9 +425,9 @@ class _SetBudgetScreenState extends State<SetBudgetScreen> {
               fontSize: 16,
               color: Colors.black87,
             ),
-          ),
-        ),
-      ],
+                    ),
+                  ),
+                ],
     );
   }
 
@@ -445,17 +445,17 @@ class _SetBudgetScreenState extends State<SetBudgetScreen> {
         ),
         SizedBox(height: 8),
         Container(
-          decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(12),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withOpacity(0.05),
-                blurRadius: 10,
-                offset: Offset(0, 2),
-              ),
-            ],
-          ),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(12),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withOpacity(0.05),
+                        blurRadius: 10,
+                        offset: Offset(0, 2),
+                      ),
+                    ],
+                  ),
           child: DropdownButtonFormField<String>(
             value: _selectedBank,
             hint: Text(
@@ -478,7 +478,7 @@ class _SetBudgetScreenState extends State<SetBudgetScreen> {
                 child: Text(
                   bank,
                   style: GoogleFonts.roboto(
-                    fontSize: 16,
+                          fontSize: 16,
                     color: Colors.black87,
                   ),
                 ),
@@ -501,19 +501,19 @@ class _SetBudgetScreenState extends State<SetBudgetScreen> {
     return Container(
       margin: EdgeInsets.only(bottom: 16),
       padding: EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.white,
+                decoration: BoxDecoration(
+                  color: Colors.white,
         borderRadius: BorderRadius.circular(16),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.05),
-            blurRadius: 10,
-            offset: Offset(0, 2),
-          ),
-        ],
-      ),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withOpacity(0.05),
+                      blurRadius: 10,
+                      offset: Offset(0, 2),
+                    ),
+                  ],
+                ),
       child: Column(
-        children: [
+                  children: [
           Row(
             crossAxisAlignment: CrossAxisAlignment.center,
             children: [
@@ -658,7 +658,7 @@ class _SetBudgetScreenState extends State<SetBudgetScreen> {
               transaction.category.icon,
               color: Colors.purple,
               size: 24,
-            ),
+          ),
           ),
           SizedBox(width: 12),
           
@@ -671,10 +671,10 @@ class _SetBudgetScreenState extends State<SetBudgetScreen> {
                   transaction.category.name,
                   style: GoogleFonts.montserrat(
                     fontWeight: FontWeight.w600,
-                    fontSize: 16,
-                    color: Colors.black87,
-                  ),
-                ),
+                fontSize: 16,
+                color: Colors.black87,
+              ),
+            ),
                 SizedBox(height: 4),
                 Text(
                   transaction.remarks,
@@ -684,7 +684,7 @@ class _SetBudgetScreenState extends State<SetBudgetScreen> {
                   ),
                 ),
                 SizedBox(height: 4),
-                Text(
+          Text(
                   DateFormat('MMM dd, yyyy').format(transaction.date),
                   style: GoogleFonts.montserrat(
                     color: Colors.grey[500],
@@ -807,16 +807,16 @@ class _SetBudgetScreenState extends State<SetBudgetScreen> {
         title: Text(
           'Delete Category',
           style: GoogleFonts.roboto(
-            fontSize: 18,
-            fontWeight: FontWeight.w600,
-          ),
+                  fontSize: 18,
+                  fontWeight: FontWeight.w600,
+                ),
         ),
         content: Text(
           'Are you sure you want to delete "${category.name}" category?\n\nThis action cannot be undone.',
           style: GoogleFonts.roboto(fontSize: 14),
-        ),
-        actions: [
-          TextButton(
+          ),
+          actions: [
+            TextButton(
             onPressed: () => Navigator.pop(context),
             child: Text('Cancel'),
           ),
@@ -900,19 +900,19 @@ class _AddEditCategoryDialogState extends State<AddEditCategoryDialog> {
         ),
         padding: EdgeInsets.all(20),
         child: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
               Text(
                 widget.categoryToEdit != null ? 'Edit Category' : 'Add Category',
                 style: GoogleFonts.roboto(
                   fontSize: 18,
                   fontWeight: FontWeight.w600,
                   color: Colors.black87,
-                ),
               ),
-              SizedBox(height: 16),
+            ),
+            SizedBox(height: 16),
 
               // Category Name Field
               Text(
@@ -924,29 +924,29 @@ class _AddEditCategoryDialogState extends State<AddEditCategoryDialog> {
                 ),
               ),
               SizedBox(height: 8),
-              TextField(
+            TextField(
                 controller: _nameController,
-                decoration: InputDecoration(
+              decoration: InputDecoration(
                   hintText: 'Enter category name',
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(8),
-                  ),
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(8),
+                ),
                   contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 12),
                   isDense: true,
-                ),
               ),
-              SizedBox(height: 16),
+            ),
+            SizedBox(height: 16),
 
               // Color Selection
-              Text(
+            Text(
                 'Color',
                 style: GoogleFonts.roboto(
-                  fontSize: 14,
-                  fontWeight: FontWeight.w500,
+                fontSize: 14,
+                fontWeight: FontWeight.w500,
                   color: Colors.black87,
-                ),
               ),
-              SizedBox(height: 8),
+            ),
+            SizedBox(height: 8),
               Container(
                 height: 50,
                 child: ListView.builder(
@@ -954,40 +954,40 @@ class _AddEditCategoryDialogState extends State<AddEditCategoryDialog> {
                   itemCount: CategoryService.getCategoryColors().length,
                   itemBuilder: (context, index) {
                     final color = CategoryService.getCategoryColors()[index];
-                    return GestureDetector(
-                      onTap: () {
-                        setState(() {
-                          _selectedColor = color;
-                        });
-                      },
-                      child: Container(
+                return GestureDetector(
+                  onTap: () {
+                    setState(() {
+                      _selectedColor = color;
+                    });
+                  },
+                  child: Container(
                         margin: EdgeInsets.only(right: 8),
                         width: 35,
                         height: 35,
-                        decoration: BoxDecoration(
-                          color: color,
+                    decoration: BoxDecoration(
+                      color: color,
                           borderRadius: BorderRadius.circular(8),
-                          border: _selectedColor == color
-                              ? Border.all(color: Colors.black, width: 2)
-                              : null,
-                        ),
-                      ),
-                    );
+                      border: _selectedColor == color
+                          ? Border.all(color: Colors.black, width: 2)
+                          : null,
+                    ),
+                  ),
+                );
                   },
                 ),
-              ),
-              SizedBox(height: 16),
+            ),
+            SizedBox(height: 16),
 
               // Icon Selection
-              Text(
+            Text(
                 'Icon',
                 style: GoogleFonts.roboto(
-                  fontSize: 14,
-                  fontWeight: FontWeight.w500,
+                fontSize: 14,
+                fontWeight: FontWeight.w500,
                   color: Colors.black87,
-                ),
               ),
-              SizedBox(height: 8),
+            ),
+            SizedBox(height: 8),
               Container(
                 height: 50,
                 child: ListView.builder(
@@ -995,32 +995,32 @@ class _AddEditCategoryDialogState extends State<AddEditCategoryDialog> {
                   itemCount: CategoryService.getCategoryIcons().length,
                   itemBuilder: (context, index) {
                     final icon = CategoryService.getCategoryIcons()[index];
-                    return GestureDetector(
-                      onTap: () {
-                        setState(() {
-                          _selectedIcon = icon;
-                        });
-                      },
-                      child: Container(
+                return GestureDetector(
+                  onTap: () {
+                    setState(() {
+                      _selectedIcon = icon;
+                    });
+                  },
+                  child: Container(
                         margin: EdgeInsets.only(right: 8),
                         width: 35,
                         height: 35,
-                        decoration: BoxDecoration(
-                          color: _selectedIcon == icon
-                              ? _selectedColor.withOpacity(0.2)
-                              : Colors.grey[100],
-                          borderRadius: BorderRadius.circular(8),
+                    decoration: BoxDecoration(
+                      color: _selectedIcon == icon
+                          ? _selectedColor.withOpacity(0.2)
+                          : Colors.grey[100],
+                      borderRadius: BorderRadius.circular(8),
                           border: _selectedIcon == icon
                               ? Border.all(color: _selectedColor, width: 2)
                               : Border.all(color: Colors.grey[300]!),
-                        ),
-                        child: Icon(
-                          icon,
+                    ),
+                    child: Icon(
+                      icon,
                           color: _selectedIcon == icon ? _selectedColor : Colors.grey[600],
                           size: 18,
-                        ),
-                      ),
-                    );
+                    ),
+                  ),
+                );
                   },
                 ),
               ),
@@ -1030,13 +1030,13 @@ class _AddEditCategoryDialogState extends State<AddEditCategoryDialog> {
               Row(
                 mainAxisAlignment: MainAxisAlignment.end,
                 children: [
-                  TextButton(
-                    onPressed: () => Navigator.pop(context),
-                    child: Text('Cancel'),
-                  ),
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: Text('Cancel'),
+        ),
                   SizedBox(width: 12),
-                  ElevatedButton(
-                    onPressed: () {
+        ElevatedButton(
+          onPressed: () {
                       if (_nameController.text.trim().isEmpty) {
                         ScaffoldMessenger.of(context).showSnackBar(
                           SnackBar(
@@ -1047,20 +1047,20 @@ class _AddEditCategoryDialogState extends State<AddEditCategoryDialog> {
                         return;
                       }
 
-                      final category = BudgetCategory(
+              final category = BudgetCategory(
                         name: _nameController.text.trim(),
                         amount: widget.categoryToEdit?.amount ?? 0,
-                        color: _selectedColor,
-                        icon: _selectedIcon,
-                      );
+                color: _selectedColor,
+                icon: _selectedIcon,
+              );
 
                       widget.onSave(category);
-                      Navigator.pop(context);
-                    },
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Color(0xFF6C5CE7),
-                      foregroundColor: Colors.white,
-                    ),
+              Navigator.pop(context);
+          },
+          style: ElevatedButton.styleFrom(
+            backgroundColor: Color(0xFF6C5CE7),
+            foregroundColor: Colors.white,
+          ),
                     child: Text(widget.categoryToEdit != null ? 'Update' : 'Add'),
                   ),
                 ],
