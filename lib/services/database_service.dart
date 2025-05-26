@@ -1,9 +1,7 @@
 import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart';
-import 'dart:math';
 import '../models/database_models.dart';
 import 'package:flutter/material.dart';
-import 'package:intl/intl.dart';
 
 class DatabaseService {
   static DatabaseService? _instance;
@@ -87,6 +85,15 @@ class DatabaseService {
             referenceNumber TEXT,
             userRemarks TEXT,
             status TEXT NOT NULL
+          )
+        ''');
+
+        // Create app_settings table for storing configuration
+        await db.execute('''
+          CREATE TABLE app_settings(
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL,
+            updated_at TEXT NOT NULL
           )
         ''');
 
@@ -251,6 +258,39 @@ class DatabaseService {
     await db.insert('sms_transactions', smsTransaction.toMap(), conflictAlgorithm: ConflictAlgorithm.replace);
   }
 
+  // New method: Insert SMS transaction only if it doesn't exist
+  Future<bool> insertNewSmsTransaction(SmsTransactionDB smsTransaction) async {
+    final db = await database;
+    
+    // Check if SMS transaction already exists
+    final existing = await getSmsTransactionById(smsTransaction.id);
+    if (existing != null) {
+      print('📝 SMS transaction already exists: ${smsTransaction.id}');
+      return false; // Already exists
+    }
+    
+    // Insert new SMS transaction
+    await db.insert('sms_transactions', smsTransaction.toMap());
+    print('✅ Inserted new SMS transaction: ${smsTransaction.id}');
+    return true; // Successfully inserted
+  }
+
+  // New method: Get SMS transaction by ID
+  Future<SmsTransactionDB?> getSmsTransactionById(String id) async {
+    final db = await database;
+    final List<Map<String, dynamic>> maps = await db.query(
+      'sms_transactions',
+      where: 'id = ?',
+      whereArgs: [id],
+      limit: 1,
+    );
+    
+    if (maps.isNotEmpty) {
+      return SmsTransactionDB.fromMap(maps.first);
+    }
+    return null;
+  }
+
   Future<List<SmsTransactionDB>> getAllSmsTransactions() async {
     final db = await database;
     final List<Map<String, dynamic>> maps = await db.query('sms_transactions', orderBy: 'date DESC');
@@ -280,45 +320,92 @@ class DatabaseService {
     await db.update('sms_transactions', updateData, where: 'id = ?', whereArgs: [id]);
   }
 
+  // New method: Get most recent SMS transaction date
+  Future<DateTime?> getMostRecentSmsTransactionDate() async {
+    final db = await database;
+    
+    try {
+      final List<Map<String, dynamic>> maps = await db.query(
+        'sms_transactions',
+        orderBy: 'date DESC',
+        limit: 1,
+      );
+      
+      if (maps.isNotEmpty) {
+        return DateTime.parse(maps.first['date']);
+      }
+    } catch (e) {
+      print('❌ Error getting most recent SMS transaction date: $e');
+    }
+    
+    return null;
+  }
+
+  // New method: Get last processed SMS date
+  Future<DateTime?> getLastProcessedSmsDate() async {
+    final db = await database;
+    
+    // First try to get from a settings table (we'll create this)
+    try {
+      final List<Map<String, dynamic>> maps = await db.query(
+        'app_settings',
+        where: 'key = ?',
+        whereArgs: ['last_processed_sms_date'],
+        limit: 1,
+      );
+      
+      if (maps.isNotEmpty) {
+        return DateTime.parse(maps.first['value']);
+      }
+    } catch (e) {
+      // Table might not exist yet, fall back to most recent SMS date
+      print('⚠️ App settings table not found, using most recent SMS date');
+    }
+    
+    // Fallback to most recent SMS transaction date
+    return await getMostRecentSmsTransactionDate();
+  }
+
+  // New method: Update last processed SMS date
+  Future<void> updateLastProcessedSmsDate(DateTime date) async {
+    final db = await database;
+    
+    try {
+      await db.insert(
+        'app_settings',
+        {
+          'key': 'last_processed_sms_date',
+          'value': date.toIso8601String(),
+          'updated_at': DateTime.now().toIso8601String(),
+        },
+        conflictAlgorithm: ConflictAlgorithm.replace,
+      );
+      print('📅 Updated last processed SMS date: $date');
+    } catch (e) {
+      print('❌ Failed to update last processed SMS date: $e');
+    }
+  }
+
+  // New method: Get count of new SMS transactions since last check
+  Future<int> getNewSmsCount() async {
+    final lastProcessed = await getLastProcessedSmsDate();
+    if (lastProcessed == null) return 0;
+    
+    final db = await database;
+    final List<Map<String, dynamic>> maps = await db.query(
+      'sms_transactions',
+      where: 'date > ?',
+      whereArgs: [lastProcessed.toIso8601String()],
+    );
+    
+    return maps.length;
+  }
+
   // Category operations
   Future<List<BudgetCategoryDB>> getAllCategories() async {
     final db = await database;
     final List<Map<String, dynamic>> maps = await db.query('budget_categories');
     return List.generate(maps.length, (i) => BudgetCategoryDB.fromMap(maps[i]));
-  }
-
-  // Helper method to get random category for demo transactions
-  Future<BudgetCategoryDB> getRandomCategory() async {
-    final categories = await getAllCategories();
-    if (categories.isNotEmpty) {
-      final random = Random();
-      return categories[random.nextInt(categories.length)];
-    }
-    
-    // Fallback category
-    return BudgetCategoryDB(
-      name: 'General',
-      amount: 0,
-      iconCodePoint: Icons.category.codePoint,
-      colorValue: Colors.grey.value,
-      isDefault: true,
-      createdAt: DateTime.now(),
-    );
-  }
-
-  // Helper method to get the most recent date with SMS transactions
-  Future<DateTime?> getMostRecentSmsTransactionDate() async {
-    final db = await database;
-    final List<Map<String, dynamic>> maps = await db.query(
-      'sms_transactions',
-      orderBy: 'date DESC',
-      limit: 1,
-    );
-    
-    if (maps.isNotEmpty) {
-      return DateTime.parse(maps.first['date']);
-    }
-    return null;
   }
 
   Future<List<String>> getAvailableSmsTransactionDates() async {
@@ -332,259 +419,114 @@ class DatabaseService {
     return maps.map((map) => map['date_only'] as String).toList();
   }
 
-  // Demo data creation for testing
-  Future<void> createDemoData() async {
-    // Create a demo account
-    final demoAccount = AccountDB(
-      id: 'demo-account-1',
-      accountNumber: '1234567890',
-      bankName: 'Demo Bank',
-      totalBudget: 50000,
-      currentBalance: 35000,
-      createdAt: DateTime.now(),
-      isActive: true,
+  // Get accepted SMS transactions for balance calculation
+  Future<List<SmsTransactionDB>> getAcceptedSmsTransactions() async {
+    final db = await database;
+    final List<Map<String, dynamic>> maps = await db.query(
+      'sms_transactions',
+      where: 'status = ?',
+      whereArgs: ['accepted'],
+      orderBy: 'date DESC',
     );
-    await insertAccount(demoAccount);
+    return List.generate(maps.length, (i) => SmsTransactionDB.fromMap(maps[i]));
+  }
 
-    // Create demo transactions for today with random categories
-    final today = DateTime.now();
-    final categories = await getAllCategories();
-    final random = Random();
+  // Get latest SMS transaction with balance information
+  Future<SmsTransactionDB?> getLatestSmsWithBalance() async {
+    final db = await database;
+    
+    // First try to get from accepted transactions
+    final List<Map<String, dynamic>> acceptedMaps = await db.query(
+      'sms_transactions',
+      where: 'status = ? AND rawMessage LIKE ?',
+      whereArgs: ['accepted', '%balance%'],
+      orderBy: 'date DESC',
+      limit: 1,
+    );
+    
+    if (acceptedMaps.isNotEmpty) {
+      return SmsTransactionDB.fromMap(acceptedMaps.first);
+    }
+    
+    // If no accepted transactions with balance, try all transactions
+    final List<Map<String, dynamic>> allMaps = await db.query(
+      'sms_transactions',
+      where: 'rawMessage LIKE ?',
+      whereArgs: ['%balance%'],
+      orderBy: 'date DESC',
+      limit: 1,
+    );
+    
+    if (allMaps.isNotEmpty) {
+      return SmsTransactionDB.fromMap(allMaps.first);
+    }
+    
+    return null;
+  }
 
-    final demoTransactions = [
-      TransactionDB(
-        id: 'demo-trans-1',
-        amount: 1200.0,
-        remarks: 'Lunch at restaurant',
-        date: today.subtract(Duration(hours: 2)),
-        categoryName: categories.isNotEmpty ? categories[0].name : 'Food',
-        categoryIconCodePoint: categories.isNotEmpty ? categories[0].iconCodePoint : Icons.restaurant.codePoint,
-        categoryColorValue: categories.isNotEmpty ? categories[0].colorValue : Colors.orange.value,
-        accountId: demoAccount.id,
-        merchant: 'Restaurant ABC',
-        referenceNumber: 'TXN12345',
-        type: 'debit',
-        source: 'manual',
-      ),
-      TransactionDB(
-        id: 'demo-trans-2',
-        amount: 5000.0,
-        remarks: 'Salary credit',
-        date: today.subtract(Duration(hours: 5)),
-        categoryName: 'Income',
-        categoryIconCodePoint: Icons.account_balance_wallet.codePoint,
-        categoryColorValue: Colors.green.value,
-        accountId: demoAccount.id,
-        merchant: 'Company XYZ',
-        referenceNumber: 'SAL789',
-        type: 'credit',
-        source: 'manual',
-      ),
-      TransactionDB(
-        id: 'demo-trans-3',
-        amount: 800.0,
-        remarks: 'Uber ride',
-        date: today.subtract(Duration(hours: 1)),
-        categoryName: categories.length > 1 ? categories[1].name : 'Transportation',
-        categoryIconCodePoint: categories.length > 1 ? categories[1].iconCodePoint : Icons.directions_car.codePoint,
-        categoryColorValue: categories.length > 1 ? categories[1].colorValue : Colors.blue.value,
-        accountId: demoAccount.id,
-        merchant: 'Uber',
-        referenceNumber: 'UBR456',
-        type: 'debit',
-        source: 'manual',
-      ),
+  // Update account balance based on latest SMS
+  Future<void> updateAccountBalanceFromSms(String accountId) async {
+    try {
+      print('🔄 Updating account balance from SMS for account: $accountId');
+      
+      // Get the latest SMS transaction with balance information
+      final latestSmsWithBalance = await getLatestSmsWithBalance();
+      
+      if (latestSmsWithBalance != null) {
+        // Parse balance from the SMS message
+        final balance = _parseBalanceFromSmsMessage(latestSmsWithBalance.rawMessage);
+        
+        if (balance != null) {
+          print('💰 Found balance in latest SMS: ₹$balance');
+          
+          // Update account balance in the accounts table
+          final db = await database;
+          await db.update(
+            'accounts',
+            {'currentBalance': balance},
+            where: 'id = ?',
+            whereArgs: [accountId],
+          );
+          
+          print('✅ Account balance updated to: ₹$balance');
+        } else {
+          print('⚠️ No balance found in latest SMS message');
+        }
+      } else {
+        print('⚠️ No SMS transactions with balance information found');
+      }
+    } catch (e) {
+      print('❌ Error updating account balance from SMS: $e');
+    }
+  }
+
+  // Parse balance from SMS message text
+  double? _parseBalanceFromSmsMessage(String smsText) {
+    final patterns = [
+      // Available balance patterns
+      r'(?:avl|available|avail)\s*(?:bal|balance)(?:\s*:)?\s*(?:rs\.?|inr|₹)?\s*(\d+(?:,\d+)*(?:\.\d{2})?)',
+      r'(?:bal|balance)(?:\s*:)?\s*(?:rs\.?|inr|₹)?\s*(\d+(?:,\d+)*(?:\.\d{2})?)',
+      // Current balance patterns
+      r'(?:current|curr)\s*(?:bal|balance)(?:\s*:)?\s*(?:rs\.?|inr|₹)?\s*(\d+(?:,\d+)*(?:\.\d{2})?)',
+      // Balance after transaction
+      r'(?:balance|bal)\s*(?:after|is|now)(?:\s*:)?\s*(?:rs\.?|inr|₹)?\s*(\d+(?:,\d+)*(?:\.\d{2})?)',
+      // Remaining balance
+      r'(?:remaining|rem)\s*(?:bal|balance)(?:\s*:)?\s*(?:rs\.?|inr|₹)?\s*(\d+(?:,\d+)*(?:\.\d{2})?)',
     ];
 
-    for (final transaction in demoTransactions) {
-      await insertTransaction(transaction);
+    for (final pattern in patterns) {
+      final regex = RegExp(pattern, caseSensitive: false);
+      final match = regex.firstMatch(smsText);
+      if (match != null) {
+        final balanceStr = match.group(1)?.replaceAll(',', '');
+        final balance = double.tryParse(balanceStr ?? '');
+        if (balance != null) {
+          print('💰 Parsed balance from SMS: ₹$balance');
+          return balance;
+        }
+      }
     }
-
-    // Create demo SMS transactions for testing
-    final may24_2024 = DateTime(2024, 5, 24); // May 24th, 2024
-    final demoSmsTransactions = [
-      // Today's transactions
-      SmsTransactionDB(
-        id: 'sms-1',
-        rawMessage: 'Your A/c 1234567890 debited by Rs.1,200 on ${DateFormat('dd-MMM-yy').format(today)} at Restaurant ABC. Avbl bal Rs.35,000. Ref TXN12345',
-        bankName: 'Demo Bank',
-        accountNumber: '1234567890',
-        amount: 1200.0,
-        transactionType: 'DEBIT',
-        date: today.subtract(Duration(hours: 2)),
-        merchant: 'Restaurant ABC',
-        referenceNumber: 'TXN12345',
-        status: 'pending',
-      ),
-      SmsTransactionDB(
-        id: 'sms-2',
-        rawMessage: 'Your A/c 1234567890 credited by Rs.5,000 on ${DateFormat('dd-MMM-yy').format(today)} from Company XYZ. Avbl bal Rs.40,000. Ref SAL789',
-        bankName: 'Demo Bank',
-        accountNumber: '1234567890',
-        amount: 5000.0,
-        transactionType: 'CREDIT',
-        date: today.subtract(Duration(hours: 5)),
-        merchant: 'Company XYZ',
-        referenceNumber: 'SAL789',
-        status: 'accepted',
-      ),
-      SmsTransactionDB(
-        id: 'sms-3',
-        rawMessage: 'Your A/c 1234567890 debited by Rs.800 on ${DateFormat('dd-MMM-yy').format(today)} at Uber. Avbl bal Rs.34,200. Ref UBR456',
-        bankName: 'Demo Bank',
-        accountNumber: '1234567890',
-        amount: 800.0,
-        transactionType: 'DEBIT',
-        date: today.subtract(Duration(hours: 1)),
-        merchant: 'Uber',
-        referenceNumber: 'UBR456',
-        status: 'pending',
-      ),
-      
-      // Yesterday's transactions
-      SmsTransactionDB(
-        id: 'sms-4',
-        rawMessage: 'Your A/c 1234567890 debited by Rs.2,500 on ${DateFormat('dd-MMM-yy').format(today.subtract(Duration(days: 1)))} at Supermarket XYZ. Avbl bal Rs.32,500. Ref GRC789',
-        bankName: 'Demo Bank',
-        accountNumber: '1234567890',
-        amount: 2500.0,
-        transactionType: 'DEBIT',
-        date: today.subtract(Duration(days: 1, hours: 3)),
-        merchant: 'Supermarket XYZ',
-        referenceNumber: 'GRC789',
-        status: 'accepted',
-      ),
-      SmsTransactionDB(
-        id: 'sms-5',
-        rawMessage: 'Your A/c 1234567890 debited by Rs.150 on ${DateFormat('dd-MMM-yy').format(today.subtract(Duration(days: 1)))} at Coffee Shop. Avbl bal Rs.32,350. Ref CF123',
-        bankName: 'Demo Bank',
-        accountNumber: '1234567890',
-        amount: 150.0,
-        transactionType: 'DEBIT',
-        date: today.subtract(Duration(days: 1, hours: 10)),
-        merchant: 'Coffee Shop',
-        referenceNumber: 'CF123',
-        status: 'rejected',
-        userRemarks: 'Duplicate charge, disputed with bank',
-      ),
-      
-      // Day before yesterday's transactions
-      SmsTransactionDB(
-        id: 'sms-6',
-        rawMessage: 'Your A/c 1234567890 debited by Rs.3,200 on ${DateFormat('dd-MMM-yy').format(today.subtract(Duration(days: 2)))} at Electronics Store. Avbl bal Rs.29,150. Ref ELC456',
-        bankName: 'Demo Bank',
-        accountNumber: '1234567890',
-        amount: 3200.0,
-        transactionType: 'DEBIT',
-        date: today.subtract(Duration(days: 2, hours: 4)),
-        merchant: 'Electronics Store',
-        referenceNumber: 'ELC456',
-        status: 'accepted',
-      ),
-      SmsTransactionDB(
-        id: 'sms-7',
-        rawMessage: 'Your A/c 1234567890 credited by Rs.1,000 on ${DateFormat('dd-MMM-yy').format(today.subtract(Duration(days: 2)))} from Cashback Reward. Avbl bal Rs.30,150. Ref CB789',
-        bankName: 'Demo Bank',
-        accountNumber: '1234567890',
-        amount: 1000.0,
-        transactionType: 'CREDIT',
-        date: today.subtract(Duration(days: 2, hours: 8)),
-        merchant: 'Cashback Reward',
-        referenceNumber: 'CB789',
-        status: 'accepted',
-      ),
-
-      // May 24th, 2024 transactions - the missing ones!
-      SmsTransactionDB(
-        id: 'sms-may24-1',
-        rawMessage: 'Your A/c 1234567890 debited by Rs.2,800 on 24-May-24 at Amazon Pay. Avbl bal Rs.28,200. Ref AMZ789',
-        bankName: 'Demo Bank',
-        accountNumber: '1234567890',
-        amount: 2800.0,
-        transactionType: 'DEBIT',
-        date: may24_2024.add(Duration(hours: 10, minutes: 30)),
-        merchant: 'Amazon Pay',
-        referenceNumber: 'AMZ789',
-        status: 'pending',
-      ),
-      SmsTransactionDB(
-        id: 'sms-may24-2',
-        rawMessage: 'Your A/c 1234567890 debited by Rs.450 on 24-May-24 at Starbucks Coffee. Avbl bal Rs.27,750. Ref STC456',
-        bankName: 'Demo Bank',
-        accountNumber: '1234567890',
-        amount: 450.0,
-        transactionType: 'DEBIT',
-        date: may24_2024.add(Duration(hours: 14, minutes: 15)),
-        merchant: 'Starbucks Coffee',
-        referenceNumber: 'STC456',
-        status: 'accepted',
-      ),
-      SmsTransactionDB(
-        id: 'sms-may24-3',
-        rawMessage: 'Your A/c 1234567890 credited by Rs.15,000 on 24-May-24 from Salary Credit. Avbl bal Rs.42,750. Ref SAL2024',
-        bankName: 'Demo Bank',
-        accountNumber: '1234567890',
-        amount: 15000.0,
-        transactionType: 'CREDIT',
-        date: may24_2024.add(Duration(hours: 9, minutes: 0)),
-        merchant: 'Salary Credit',
-        referenceNumber: 'SAL2024',
-        status: 'accepted',
-      ),
-      SmsTransactionDB(
-        id: 'sms-may24-4',
-        rawMessage: 'Your A/c 1234567890 debited by Rs.1,200 on 24-May-24 at Zomato Order. Avbl bal Rs.41,550. Ref ZOM123',
-        bankName: 'Demo Bank',
-        accountNumber: '1234567890',
-        amount: 1200.0,
-        transactionType: 'DEBIT',
-        date: may24_2024.add(Duration(hours: 20, minutes: 45)),
-        merchant: 'Zomato Order',
-        referenceNumber: 'ZOM123',
-        status: 'pending',
-      ),
-      SmsTransactionDB(
-        id: 'sms-may24-5',
-        rawMessage: 'Your A/c 1234567890 debited by Rs.650 on 24-May-24 at Petrol Pump. Avbl bal Rs.40,900. Ref PTL789',
-        bankName: 'Demo Bank',
-        accountNumber: '1234567890',
-        amount: 650.0,
-        transactionType: 'DEBIT',
-        date: may24_2024.add(Duration(hours: 16, minutes: 20)),
-        merchant: 'Petrol Pump',
-        referenceNumber: 'PTL789',
-        status: 'accepted',
-      ),
-
-      // Add some more historical transactions for May 23rd, 2024
-      SmsTransactionDB(
-        id: 'sms-may23-1',
-        rawMessage: 'Your A/c 1234567890 debited by Rs.890 on 23-May-24 at Local Grocery. Avbl bal Rs.28,900. Ref GRC567',
-        bankName: 'Demo Bank',
-        accountNumber: '1234567890',
-        amount: 890.0,
-        transactionType: 'DEBIT',
-        date: DateTime(2024, 5, 23, 11, 30),
-        merchant: 'Local Grocery',
-        referenceNumber: 'GRC567',
-        status: 'accepted',
-      ),
-      SmsTransactionDB(
-        id: 'sms-may23-2',
-        rawMessage: 'Your A/c 1234567890 debited by Rs.320 on 23-May-24 at Metro Card Recharge. Avbl bal Rs.28,580. Ref MTC234',
-        bankName: 'Demo Bank',
-        accountNumber: '1234567890',
-        amount: 320.0,
-        transactionType: 'DEBIT',
-        date: DateTime(2024, 5, 23, 8, 15),
-        merchant: 'Metro Card Recharge',
-        referenceNumber: 'MTC234',
-        status: 'accepted',
-      ),
-    ];
-
-    for (final smsTransaction in demoSmsTransactions) {
-      await insertSmsTransaction(smsTransaction);
-    }
+    
+    return null;
   }
 } 

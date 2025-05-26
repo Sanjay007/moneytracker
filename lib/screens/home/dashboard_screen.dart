@@ -443,10 +443,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
                               fontWeight: FontWeight.w500,
                             ),
                           ),
-                      Text(
+                          Text(
                             _currentAccount!.maskedAccountNumber,
                             style: GoogleFonts.roboto(
-                          color: Colors.white70,
+                              color: Colors.white70,
                               fontSize: 12,
                             ),
                           ),
@@ -470,7 +470,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                             ),
                           ),
                           SizedBox(width: 8),
-                      Icon(Icons.more_horiz, color: Colors.white70),
+                          Icon(Icons.more_horiz, color: Colors.white70),
                         ],
                       ),
                     ],
@@ -501,22 +501,50 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   ),
                   SizedBox(height: 20),
                   Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                     children: [
-                      _buildActionButton(Icons.add, 'Deposit'),
-                      SizedBox(width: 15),
-                      _buildActionButton(Icons.trending_up, 'Transfer'),
-                      SizedBox(width: 15),
-                      GestureDetector(
-                        onTap: () {
-                          Navigator.push(
-                            context,
-                            MaterialPageRoute(builder: (context) => SmsTransactionsScreen()),
-                          );
-                        },
-                        child: _buildActionButton(Icons.sms, 'SMS'),
+                      Expanded(
+                        child: _buildActionButton(Icons.add, 'Deposit'),
                       ),
-                      SizedBox(width: 15),
-                      _buildActionButton(Icons.apps, 'More'),
+                      SizedBox(width: 8),
+                      Expanded(
+                        child: _buildActionButton(Icons.trending_up, 'Transfer'),
+                      ),
+                      SizedBox(width: 8),
+                      Expanded(
+                        child: GestureDetector(
+                          onTap: () async {
+                            final result = await Navigator.push(
+                              context,
+                              MaterialPageRoute(builder: (context) => SmsTransactionsScreen()),
+                            );
+                            // Refresh today's transactions when returning from SMS screen
+                            // This ensures accepted SMS transactions appear in the dashboard
+                            _loadTodayTransactions();
+                            
+                            // Refresh account balance in case it was updated from SMS
+                            if (_currentAccount != null) {
+                              print('🔄 Refreshing account balance after SMS screen...');
+                              try {
+                                final updatedAccount = await _accountService.getActiveAccount();
+                                if (updatedAccount != null) {
+                                  setState(() {
+                                    _currentAccount = updatedAccount;
+                                  });
+                                  print('✅ Account balance refreshed: ${updatedAccount.formattedBalance}');
+                                }
+                              } catch (e) {
+                                print('❌ Failed to refresh account balance: $e');
+                              }
+                            }
+                          },
+                          child: _buildActionButton(Icons.sms, 'SMS'),
+                        ),
+                      ),
+                      SizedBox(width: 8),
+                      Expanded(
+                        child: _buildActionButton(Icons.apps, 'More'),
+                      ),
                     ],
                   ),
                 ],
@@ -570,9 +598,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   ElevatedButton(
                     onPressed: () {
                       Navigator.push(
-        context,
-        MaterialPageRoute(builder: (context) => SetBudgetScreen()),
-      );
+                        context,
+                        MaterialPageRoute(builder: (context) => SetBudgetScreen()),
+                      );
                     },
                     style: ElevatedButton.styleFrom(
                       backgroundColor: Color(0xFF6C5CE7),
@@ -593,14 +621,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
               children: [
                 Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                      'Today\'s Transactions',
+                  children: [
+                    Text(
+                      'Recent Transactions',
                       style: GoogleFonts.montserrat(
-                    fontSize: 18,
-                    fontWeight: FontWeight.w600,
-                    color: Colors.black87,
-                  ),
+                        fontSize: 18,
+                        fontWeight: FontWeight.w600,
+                        color: Colors.black87,
+                      ),
                     ),
                     Text(
                       DateFormat('EEEE, MMM dd, yyyy').format(DateTime.now()),
@@ -679,6 +707,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   Widget _buildActionButton(IconData icon, String label) {
     return Column(
+      mainAxisSize: MainAxisSize.min,
       children: [
         Container(
           padding: EdgeInsets.all(12),
@@ -695,6 +724,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
             color: Colors.white70,
             fontSize: 12,
           ),
+          textAlign: TextAlign.center,
+          overflow: TextOverflow.ellipsis,
+          maxLines: 1,
         ),
       ],
     );
@@ -940,18 +972,143 @@ class _DashboardScreenState extends State<DashboardScreen> {
     setState(() => _isLoadingTransactions = true);
     
     try {
-      final transactions = await _databaseService.getTransactionsForToday();
+      // Load regular transactions for today
+      final regularTransactions = await _databaseService.getTransactionsForToday();
+      print('🏦 Dashboard: Found ${regularTransactions.length} regular transactions for today');
+      
+      // Load ALL SMS transactions for today (regardless of status)
+      final today = DateTime.now();
+      final todayDateString = '${today.year}-${today.month.toString().padLeft(2, '0')}-${today.day.toString().padLeft(2, '0')}';
+      print('📅 Dashboard: Today is: $todayDateString');
+      
+      // Get ALL SMS transactions for today (not just accepted ones)
+      final smsTransactions = await _databaseService.getSmsTransactionsByDate(today);
+      print('📱 Dashboard: Found ${smsTransactions.length} SMS transactions for today ($todayDateString)');
+      
+      // Log details of ALL SMS transactions for today
+      for (final sms in smsTransactions) {
+        final smsDateString = '${sms.date.year}-${sms.date.month.toString().padLeft(2, '0')}-${sms.date.day.toString().padLeft(2, '0')}';
+        print('📝 Dashboard: SMS Transaction: ${sms.formattedAmount} - ${sms.merchant ?? 'No merchant'} - $smsDateString (${sms.status})');
+      }
+      
+      // Convert ALL SMS transactions from today to TransactionDB format
+      final convertedSmsTransactions = <TransactionDB>[];
+      for (final smsTransaction in smsTransactions) {
+        if (smsTransaction.amount != null) {
+          final transactionDB = TransactionDB(
+            id: 'sms_${smsTransaction.id}',
+            amount: smsTransaction.amount!,
+            remarks: smsTransaction.userRemarks ?? 'SMS Transaction',
+            date: smsTransaction.date,
+            categoryName: _getCategoryNameFromTransaction(smsTransaction),
+            categoryIconCodePoint: _getCategoryIconFromTransaction(smsTransaction),
+            categoryColorValue: _getCategoryColorFromTransaction(smsTransaction),
+            accountId: _currentAccount?.id ?? '',
+            merchant: smsTransaction.merchant,
+            referenceNumber: smsTransaction.referenceNumber,
+            type: smsTransaction.isDebit ? 'debit' : 'credit',
+            source: 'sms',
+          );
+          convertedSmsTransactions.add(transactionDB);
+          print('🔄 Dashboard: Converted SMS transaction: ${transactionDB.remarks} - ${transactionDB.type} - ₹${transactionDB.amount}');
+        }
+      }
+      
+      // Combine and sort all transactions by date (newest first)
+      final allTransactions = [...regularTransactions, ...convertedSmsTransactions];
+      allTransactions.sort((a, b) => b.date.compareTo(a.date));
+      
+      print('📊 Dashboard: Total transactions for display: ${allTransactions.length} (${regularTransactions.length} regular + ${convertedSmsTransactions.length} SMS)');
+      
       setState(() {
-        _todayTransactions = transactions;
+        _todayTransactions = allTransactions;
       });
     } catch (e) {
-      print('Error loading today\'s transactions: $e');
+      print('❌ Dashboard: Error loading today\'s transactions: $e');
       // Keep empty list if error occurs
       setState(() {
         _todayTransactions = [];
       });
     } finally {
       setState(() => _isLoadingTransactions = false);
+    }
+  }
+
+  // Helper method to determine category name from SMS transaction
+  String _getCategoryNameFromTransaction(SmsTransactionDB smsTransaction) {
+    if (smsTransaction.merchant != null) {
+      final merchant = smsTransaction.merchant!.toLowerCase();
+      
+      // Food & Dining
+      if (merchant.contains('restaurant') || merchant.contains('cafe') || 
+          merchant.contains('food') || merchant.contains('pizza') ||
+          merchant.contains('mcdonalds') || merchant.contains('kfc') ||
+          merchant.contains('swiggy') || merchant.contains('zomato')) {
+        return 'Food & Dining';
+      }
+      
+      // Shopping
+      if (merchant.contains('amazon') || merchant.contains('flipkart') ||
+          merchant.contains('shop') || merchant.contains('store') ||
+          merchant.contains('mall') || merchant.contains('retail')) {
+        return 'Shopping';
+      }
+      
+      // Transportation
+      if (merchant.contains('uber') || merchant.contains('ola') ||
+          merchant.contains('petrol') || merchant.contains('fuel') ||
+          merchant.contains('transport') || merchant.contains('metro')) {
+        return 'Transportation';
+      }
+      
+      // ATM/Bank
+      if (merchant.contains('atm') || merchant.contains('bank') ||
+          merchant.contains('branch')) {
+        return 'ATM/Bank';
+      }
+    }
+    
+    // Default category based on transaction type
+    return smsTransaction.isDebit ? 'General Expense' : 'Income';
+  }
+
+  // Helper method to get category icon
+  int _getCategoryIconFromTransaction(SmsTransactionDB smsTransaction) {
+    final categoryName = _getCategoryNameFromTransaction(smsTransaction);
+    
+    switch (categoryName) {
+      case 'Food & Dining':
+        return Icons.restaurant.codePoint;
+      case 'Shopping':
+        return Icons.shopping_bag.codePoint;
+      case 'Transportation':
+        return Icons.directions_car.codePoint;
+      case 'ATM/Bank':
+        return Icons.account_balance.codePoint;
+      case 'Income':
+        return Icons.attach_money.codePoint;
+      default:
+        return Icons.payment.codePoint;
+    }
+  }
+
+  // Helper method to get category color
+  int _getCategoryColorFromTransaction(SmsTransactionDB smsTransaction) {
+    final categoryName = _getCategoryNameFromTransaction(smsTransaction);
+    
+    switch (categoryName) {
+      case 'Food & Dining':
+        return Colors.orange.value;
+      case 'Shopping':
+        return Colors.purple.value;
+      case 'Transportation':
+        return Colors.blue.value;
+      case 'ATM/Bank':
+        return Colors.green.value;
+      case 'Income':
+        return Colors.green.value;
+      default:
+        return Colors.grey.value;
     }
   }
 
@@ -979,29 +1136,29 @@ class _DashboardScreenState extends State<DashboardScreen> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
-        children: [
-          Container(
-            padding: EdgeInsets.all(8),
-            decoration: BoxDecoration(
+            children: [
+              Container(
+                padding: EdgeInsets.all(8),
+                decoration: BoxDecoration(
                   color: Color(transaction.categoryColorValue).withOpacity(0.1),
-              borderRadius: BorderRadius.circular(8),
-            ),
+                  borderRadius: BorderRadius.circular(8),
+                ),
                 child: Icon(
                   IconData(transaction.categoryIconCodePoint, fontFamily: 'MaterialIcons'),
                   color: Color(transaction.categoryColorValue),
                   size: 20,
                 ),
-          ),
-          SizedBox(width: 12),
-          Expanded(
+              ),
+              SizedBox(width: 12),
+              Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
                       transaction.categoryName,
                       style: GoogleFonts.montserrat(
-                fontWeight: FontWeight.w500,
-                fontSize: 16,
+                        fontWeight: FontWeight.w500,
+                        fontSize: 16,
                         color: Color(0xFF6C5CE7),
                       ),
                     ),
@@ -1048,9 +1205,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   style: GoogleFonts.montserrat(
                     fontSize: 12,
                     color: Colors.grey[500],
-            ),
-          ),
-          Text(
+                  ),
+                ),
+              Text(
                 DateFormat('hh:mm a').format(transaction.date),
                 style: GoogleFonts.montserrat(
                   fontSize: 12,

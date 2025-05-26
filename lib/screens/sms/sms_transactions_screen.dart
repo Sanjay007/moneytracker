@@ -22,10 +22,19 @@ class _SmsTransactionsScreenState extends State<SmsTransactionsScreen> {
   Account? _currentAccount;
   bool _isLoading = false;
   bool _hasPermission = false;
-  bool _hasDatabaseTransactions = false; // Track if we have database transactions
   String _filter = 'pending'; // 'all', 'pending', 'accepted', 'rejected'
   DateTime _selectedDate = DateTime.now(); // Add selected date for filtering
   Map<String, List<SmsTransactionDB>> _transactionsByDate = {}; // Group transactions by date
+  
+  // New view mode properties
+  String _viewMode = 'all'; // 'all', 'by_date'
+  DateTime _startDate = DateTime.now().subtract(Duration(days: 30));
+  DateTime _endDate = DateTime.now();
+
+  // New properties for hybrid loading
+  bool _isCheckingNewSms = false;
+  int _newSmsCount = 0;
+  DateTime? _lastProcessedDate;
 
   @override
   void initState() {
@@ -54,72 +63,225 @@ class _SmsTransactionsScreenState extends State<SmsTransactionsScreen> {
     setState(() => _isLoading = true);
     
     try {
-      // First check for SMS permission and try to load real SMS data
+      print('🔄 Starting SMS transaction loading...');
+      
+      // Step 1: Always load existing transactions from database first
+      print('📂 Loading existing transactions from database...');
+      final existingTransactions = await _databaseService.getAllSmsTransactions();
+      print('📊 Found ${existingTransactions.length} existing transactions in database');
+      
+      // Step 2: Process existing transactions first
+      await _processTransactions(existingTransactions);
+      setState(() {
+        _isLoading = false;
+      });
+      
+      // Step 3: Check SMS permission
+      await _checkSmsPermissionAndScan(existingTransactions.isEmpty);
+      
+    } catch (e) {
+      print('❌ Error loading transactions: $e');
+      _showErrorDialog('Error: $e');
+      setState(() => _isLoading = false);
+    }
+  }
+
+  Future<void> _checkSmsPermissionAndScan(bool isDatabaseEmpty) async {
+    if (_currentAccount == null) return;
+    
+    setState(() => _isCheckingNewSms = true);
+    
+    try {
+      print('📱 Checking SMS permission...');
       _hasPermission = await _smsService.hasSmsPermission();
       
       if (!_hasPermission) {
+        print('🔐 Requesting SMS permission...');
         _hasPermission = await _smsService.requestSmsPermission();
       }
       
       if (_hasPermission) {
-        // Load real SMS transactions
-        setState(() {
-          _hasDatabaseTransactions = false;
-        });
-        print('📱 Loading real SMS transactions for account: ${_currentAccount!.accountNumber}');
-        await _loadSmsTransactions();
-      } else {
-        // Fallback to demo data only if SMS permission is denied
-        print('⚠️ SMS permission denied, falling back to demo data');
-        final dbTransactions = await _databaseService.getAllSmsTransactions();
-        
-        if (dbTransactions.isNotEmpty) {
-          setState(() {
-            _hasDatabaseTransactions = true;
-          });
-          await _processTransactions(dbTransactions);
+        if (isDatabaseEmpty) {
+          print('📱 Database is empty - reading ALL SMS from phone...');
+          await _scanAllSmsMessages();
         } else {
-          // No demo data and no SMS permission
-          setState(() {
-            _allTransactions = [];
-            _transactions = [];
-            _transactionsByDate = {};
-          });
+          print('📱 Database has data - scanning for NEW SMS messages only...');
+          await _scanForNewSmsMessages();
         }
+      } else {
+        print('❌ SMS permission denied, using only database transactions');
       }
+      
     } catch (e) {
-      print('❌ Error loading transactions: $e');
-      _showErrorDialog('Error: $e');
+      print('❌ Error checking SMS permission: $e');
+    } finally {
+      setState(() => _isCheckingNewSms = false);
     }
-    
-    setState(() => _isLoading = false);
   }
 
-  Future<void> _loadSmsTransactions() async {
+  Future<void> _scanAllSmsMessages() async {
     if (_currentAccount == null) return;
     
     try {
-      final transactions = await _smsService.getTransactionsForAccount(_currentAccount!.accountNumber);
+      print('🔍 Reading ALL SMS messages from phone (database was empty)...');
       
-      // Convert SmsTransaction to SmsTransactionDB for consistency
-      final dbTransactions = transactions.map((t) => SmsTransactionDB(
-        id: t.id,
-        rawMessage: t.message,
-        bankName: t.bankName,
-        accountNumber: t.accountNumber,
-        amount: t.amount,
-        transactionType: t.transactionType,
-        date: t.date,
-        merchant: t.merchant,
-        referenceNumber: t.referenceNumber,
-        userRemarks: t.userRemarks,
-        status: t.status,
-      )).toList();
+      // Read ALL SMS transactions for this account (no date filter)
+      final allSmsTransactions = await _smsService.getTransactionsForAccount(
+        _currentAccount!.accountNumber,
+      );
       
-      await _processTransactions(dbTransactions);
+      if (allSmsTransactions.isEmpty) {
+        print('ℹ️ No SMS transactions found for this account');
+        return;
+      }
+      
+      print('📱 Found ${allSmsTransactions.length} total SMS transactions');
+      int insertedCount = 0;
+      
+      // Insert all SMS transactions as new
+      for (final smsTransaction in allSmsTransactions) {
+        final dbTransaction = SmsTransactionDB(
+          id: smsTransaction.id,
+          rawMessage: smsTransaction.message,
+          bankName: smsTransaction.bankName,
+          accountNumber: smsTransaction.accountNumber,
+          amount: smsTransaction.amount,
+          transactionType: smsTransaction.transactionType,
+          date: smsTransaction.date,
+          merchant: smsTransaction.merchant,
+          referenceNumber: smsTransaction.referenceNumber,
+          userRemarks: smsTransaction.userRemarks,
+          status: 'pending', // All new SMS start as pending
+        );
+        
+        // Insert (should all be new since database was empty)
+        final wasInserted = await _databaseService.insertNewSmsTransaction(dbTransaction);
+        if (wasInserted) {
+          insertedCount++;
+        }
+      }
+      
+      print('✅ Inserted $insertedCount SMS transactions into database');
+      
+      // Set last processed date to now since we've processed all historical SMS
+      await _databaseService.updateLastProcessedSmsDate(DateTime.now());
+      
+      // Reload transactions to show all the new ones
+      if (insertedCount > 0) {
+        setState(() {
+          _newSmsCount = insertedCount;
+        });
+        await _reloadTransactionsFromDatabase();
+      }
+      
     } catch (e) {
-      _showErrorDialog('Failed to load transactions: $e');
+      print('❌ Error reading all SMS messages: $e');
     }
+  }
+
+  Future<void> _scanForNewSmsMessages() async {
+    if (_currentAccount == null) return;
+    
+    try {
+      // Get last processed SMS date
+      _lastProcessedDate = await _databaseService.getLastProcessedSmsDate();
+      print('📅 Last processed SMS date: ${_lastProcessedDate?.toIso8601String() ?? "never"}');
+      
+      // Get new SMS messages since last processed date
+      final newSmsTransactions = await _smsService.getNewSmsTransactionsSince(
+        _lastProcessedDate,
+        _currentAccount!.accountNumber,
+      );
+      
+      if (newSmsTransactions.isEmpty) {
+        print('ℹ️ No new SMS transactions found since last scan');
+        return;
+      }
+      
+      print('📱 Found ${newSmsTransactions.length} new SMS transactions');
+      int insertedCount = 0;
+      
+      // Insert only new SMS transactions
+      for (final smsTransaction in newSmsTransactions) {
+        final dbTransaction = SmsTransactionDB(
+          id: smsTransaction.id,
+          rawMessage: smsTransaction.message,
+          bankName: smsTransaction.bankName,
+          accountNumber: smsTransaction.accountNumber,
+          amount: smsTransaction.amount,
+          transactionType: smsTransaction.transactionType,
+          date: smsTransaction.date,
+          merchant: smsTransaction.merchant,
+          referenceNumber: smsTransaction.referenceNumber,
+          userRemarks: smsTransaction.userRemarks,
+          status: 'pending', // New SMS start as pending
+        );
+        
+        // Insert only if it doesn't exist (preserves user status/remarks)
+        final wasInserted = await _databaseService.insertNewSmsTransaction(dbTransaction);
+        if (wasInserted) {
+          insertedCount++;
+        }
+      }
+      
+      print('✅ Inserted $insertedCount new SMS transactions into database');
+      
+      // Update last processed date to now
+      await _databaseService.updateLastProcessedSmsDate(DateTime.now());
+      
+      // Reload transactions to show new ones
+      if (insertedCount > 0) {
+        setState(() {
+          _newSmsCount = insertedCount;
+        });
+        await _reloadTransactionsFromDatabase();
+      }
+      
+    } catch (e) {
+      print('❌ Error scanning for new SMS messages: $e');
+    }
+  }
+
+  Future<void> _reloadTransactionsFromDatabase() async {
+    try {
+      print('🔄 Reloading transactions from database...');
+      final allTransactions = await _databaseService.getAllSmsTransactions();
+      await _processTransactions(allTransactions);
+      
+      // Show success message for new transactions
+      if (_newSmsCount > 0) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Found $_newSmsCount new SMS transactions'),
+            backgroundColor: Colors.green,
+            action: SnackBarAction(
+              label: 'View',
+              textColor: Colors.white,
+              onPressed: () {
+                setState(() {
+                  _viewMode = 'all';
+                  _filter = 'all';
+                  _applyFilter();
+                });
+              },
+            ),
+          ),
+        );
+        _newSmsCount = 0; // Reset counter
+      }
+      
+    } catch (e) {
+      print('❌ Error reloading transactions: $e');
+    }
+  }
+
+  // Manual refresh method for user-triggered refresh
+  Future<void> _manualRefresh() async {
+    setState(() {
+      _newSmsCount = 0;
+    });
+    // Use the current state of transactions to determine if database is empty
+    await _checkSmsPermissionAndScan(_allTransactions.isEmpty);
   }
 
   Future<void> _processTransactions(List<SmsTransactionDB> transactions) async {
@@ -137,14 +299,16 @@ class _SmsTransactionsScreenState extends State<SmsTransactionsScreen> {
       _allTransactions = transactions;
     });
 
-    // Check if current date has transactions, if not, switch to most recent date with data
-    final currentDateKey = DateFormat('yyyy-MM-dd').format(_selectedDate);
-    if (_transactionsByDate[currentDateKey] == null || _transactionsByDate[currentDateKey]!.isEmpty) {
-      final mostRecentDate = await _databaseService.getMostRecentSmsTransactionDate();
-      if (mostRecentDate != null) {
-        setState(() {
-          _selectedDate = mostRecentDate;
-        });
+    // For "by_date" mode, ensure selected date has transactions or switch to most recent
+    if (_viewMode == 'by_date') {
+      final currentDateKey = DateFormat('yyyy-MM-dd').format(_selectedDate);
+      if (_transactionsByDate[currentDateKey] == null || _transactionsByDate[currentDateKey]!.isEmpty) {
+        final mostRecentDate = await _databaseService.getMostRecentSmsTransactionDate();
+        if (mostRecentDate != null) {
+          setState(() {
+            _selectedDate = mostRecentDate;
+          });
+        }
       }
     }
 
@@ -152,27 +316,37 @@ class _SmsTransactionsScreenState extends State<SmsTransactionsScreen> {
   }
 
   void _applyFilter() {
-    // First filter by date
-    final selectedDateKey = DateFormat('yyyy-MM-dd').format(_selectedDate);
-    final transactionsForSelectedDate = _transactionsByDate[selectedDateKey] ?? [];
+    List<SmsTransactionDB> filteredTransactions;
+
+    if (_viewMode == 'all') {
+      // Show all transactions sorted by latest date
+      filteredTransactions = List.from(_allTransactions);
+      filteredTransactions.sort((a, b) => b.date.compareTo(a.date));
+    } else {
+      // Show transactions for selected date
+      final selectedDateKey = DateFormat('yyyy-MM-dd').format(_selectedDate);
+      filteredTransactions = _transactionsByDate[selectedDateKey] ?? [];
+    }
     
-    // Then apply status filter
+    // Apply status filter
     switch (_filter) {
       case 'pending':
-        _transactions = transactionsForSelectedDate.where((t) => t.isPending).toList();
+        _transactions = filteredTransactions.where((t) => t.isPending).toList();
         break;
       case 'accepted':
-        _transactions = transactionsForSelectedDate.where((t) => t.isAccepted).toList();
+        _transactions = filteredTransactions.where((t) => t.isAccepted).toList();
         break;
       case 'rejected':
-        _transactions = transactionsForSelectedDate.where((t) => t.isRejected).toList();
+        _transactions = filteredTransactions.where((t) => t.isRejected).toList();
         break;
       default:
-        _transactions = transactionsForSelectedDate;
+        _transactions = filteredTransactions;
     }
+
+    setState(() {});
   }
 
-  void _updateTransactionStatus(SmsTransactionDB transaction, String newStatus, String? remarks) {
+  void _updateTransactionStatus(SmsTransactionDB transaction, String newStatus, String? remarks) async {
     setState(() {
       final index = _allTransactions.indexWhere((t) => t.id == transaction.id);
       if (index != -1) {
@@ -181,8 +355,70 @@ class _SmsTransactionsScreenState extends State<SmsTransactionsScreen> {
           userRemarks: remarks ?? transaction.userRemarks,
         );
       }
-      _applyFilter();
     });
+
+    // Persist changes to database
+    try {
+      await _databaseService.updateSmsTransactionStatus(
+        transaction.id,
+        newStatus,
+        remarks: remarks,
+      );
+      print('✅ Transaction status updated in database: ${transaction.id} -> $newStatus');
+      
+      // Update account balance when transaction is accepted
+      if (newStatus == 'accepted' && _currentAccount != null) {
+        print('💰 Transaction accepted, updating account balance...');
+        
+        try {
+          // Method 1: Try to update balance from SMS data
+          await _databaseService.updateAccountBalanceFromSms(_currentAccount!.id);
+          
+          // Method 2: If no balance found in SMS, use account service calculation
+          final acceptedTransactions = await _databaseService.getAcceptedSmsTransactions();
+          if (acceptedTransactions.isNotEmpty) {
+            await _accountService.updateBalanceFromSmsTransactions(
+              _currentAccount!.id, 
+              acceptedTransactions
+            );
+          }
+          
+          print('✅ Account balance updated successfully');
+          
+          // Show success message with balance update info
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Transaction accepted and account balance updated'),
+              backgroundColor: Colors.green,
+              duration: Duration(seconds: 3),
+            ),
+          );
+          
+        } catch (e) {
+          print('❌ Failed to update account balance: $e');
+          // Still show success for transaction acceptance, but warn about balance
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Transaction accepted, but balance update failed'),
+              backgroundColor: Colors.orange,
+              duration: Duration(seconds: 3),
+            ),
+          );
+        }
+      }
+      
+    } catch (e) {
+      print('❌ Failed to update transaction status in database: $e');
+      // Optionally show error to user
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Failed to save changes to database'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
+
+    _applyFilter();
   }
 
   void _showAddRemarksDialog(SmsTransactionDB transaction) {
@@ -281,12 +517,6 @@ class _SmsTransactionsScreenState extends State<SmsTransactionsScreen> {
             onPressed: () {
               _updateTransactionStatus(transaction, action, transaction.userRemarks);
               Navigator.pop(context);
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(
-                  content: Text('Transaction ${action}'),
-                  backgroundColor: action == 'accepted' ? Colors.green : Colors.red,
-                ),
-              );
             },
             style: ElevatedButton.styleFrom(
               backgroundColor: action == 'accepted' ? Colors.green : Colors.red,
@@ -303,12 +533,105 @@ class _SmsTransactionsScreenState extends State<SmsTransactionsScreen> {
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
-        title: Text('Error'),
-        content: Text(message),
+        title: Text(
+          'Error',
+          style: GoogleFonts.montserrat(fontWeight: FontWeight.w600),
+        ),
+        content: Text(
+          message,
+          style: GoogleFonts.montserrat(),
+        ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: Text('OK'),
+            onPressed: () => Navigator.of(context).pop(),
+            child: Text(
+              'OK',
+              style: GoogleFonts.montserrat(
+                color: Color(0xFF6C5CE7),
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showInfoDialog() {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(
+          'SMS Processing Info',
+          style: GoogleFonts.montserrat(fontWeight: FontWeight.w600),
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _buildInfoRow('Database Transactions', '${_allTransactions.length}'),
+            _buildInfoRow('SMS Permission', _hasPermission ? 'Granted' : 'Denied'),
+            if (_lastProcessedDate != null)
+              _buildInfoRow(
+                'Last SMS Scan',
+                DateFormat('dd-MMM-yy HH:mm').format(_lastProcessedDate!),
+              ),
+            SizedBox(height: 12),
+            Text(
+              'Transactions are automatically saved to preserve your acceptance/rejection status and remarks.',
+              style: GoogleFonts.montserrat(
+                fontSize: 12,
+                color: Colors.grey[600],
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: Text(
+              'OK',
+              style: GoogleFonts.montserrat(
+                color: Color(0xFF6C5CE7),
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildInfoRow(String label, String value) {
+    return Padding(
+      padding: EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Expanded(
+            flex: 2,
+            child: Text(
+              label,
+              style: GoogleFonts.montserrat(
+                fontSize: 14,
+                color: Colors.grey[700],
+              ),
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          SizedBox(width: 8),
+          Expanded(
+            flex: 1,
+            child: Text(
+              value,
+              style: GoogleFonts.montserrat(
+                fontSize: 14,
+                fontWeight: FontWeight.w500,
+                color: Colors.black87,
+              ),
+              overflow: TextOverflow.ellipsis,
+              textAlign: TextAlign.end,
+            ),
           ),
         ],
       ),
@@ -344,19 +667,97 @@ class _SmsTransactionsScreenState extends State<SmsTransactionsScreen> {
     }
   }
 
+  Future<void> _showDateRangePicker() async {
+    final DateTimeRange? picked = await showDateRangePicker(
+      context: context,
+      firstDate: DateTime.now().subtract(Duration(days: 365)),
+      lastDate: DateTime.now(),
+      initialDateRange: DateTimeRange(start: _startDate, end: _endDate),
+      builder: (context, child) {
+        return Theme(
+          data: Theme.of(context).copyWith(
+            colorScheme: ColorScheme.light(
+              primary: Color(0xFF6C5CE7),
+              onPrimary: Colors.white,
+              surface: Colors.white,
+              onSurface: Colors.black,
+            ),
+          ),
+          child: child!,
+        );
+      },
+    );
+    
+    if (picked != null) {
+      setState(() {
+        _startDate = picked.start;
+        _endDate = picked.end;
+        // Filter transactions based on date range
+        _filterTransactionsByDateRange();
+      });
+    }
+  }
+
+  void _filterTransactionsByDateRange() {
+    // Create a filtered list of transactions within the date range
+    final filteredTransactions = _allTransactions.where((transaction) {
+      final transactionDate = DateTime(
+        transaction.date.year,
+        transaction.date.month,
+        transaction.date.day,
+      );
+      final startDate = DateTime(_startDate.year, _startDate.month, _startDate.day);
+      final endDate = DateTime(_endDate.year, _endDate.month, _endDate.day);
+      
+      return transactionDate.isAfter(startDate.subtract(Duration(days: 1))) &&
+             transactionDate.isBefore(endDate.add(Duration(days: 1)));
+    }).toList();
+
+    // Rebuild the transactions by date map with filtered data
+    _transactionsByDate.clear();
+    for (final transaction in filteredTransactions) {
+      final dateKey = DateFormat('yyyy-MM-dd').format(transaction.date);
+      if (!_transactionsByDate.containsKey(dateKey)) {
+        _transactionsByDate[dateKey] = [];
+      }
+      _transactionsByDate[dateKey]!.add(transaction);
+    }
+
+    _applyFilter();
+  }
+
+  void _onViewModeChanged(String newMode) {
+    setState(() {
+      _viewMode = newMode;
+      if (newMode == 'by_date') {
+        // Reset to single date selection
+        _selectedDate = DateTime.now();
+      }
+      _applyFilter();
+    });
+  }
+
   List<SmsTransactionDB> _getFilteredTransactionsByStatus(String status) {
-    final selectedDateKey = DateFormat('yyyy-MM-dd').format(_selectedDate);
-    final transactionsForSelectedDate = _transactionsByDate[selectedDateKey] ?? [];
+    List<SmsTransactionDB> filteredTransactions;
+
+    if (_viewMode == 'all') {
+      // Use all transactions
+      filteredTransactions = _allTransactions;
+    } else {
+      // Use transactions for selected date
+      final selectedDateKey = DateFormat('yyyy-MM-dd').format(_selectedDate);
+      filteredTransactions = _transactionsByDate[selectedDateKey] ?? [];
+    }
     
     switch (status) {
       case 'pending':
-        return transactionsForSelectedDate.where((t) => t.isPending).toList();
+        return filteredTransactions.where((t) => t.isPending).toList();
       case 'accepted':
-        return transactionsForSelectedDate.where((t) => t.isAccepted).toList();
+        return filteredTransactions.where((t) => t.isAccepted).toList();
       case 'rejected':
-        return transactionsForSelectedDate.where((t) => t.isRejected).toList();
+        return filteredTransactions.where((t) => t.isRejected).toList();
       default:
-        return transactionsForSelectedDate;
+        return filteredTransactions;
     }
   }
 
@@ -370,21 +771,40 @@ class _SmsTransactionsScreenState extends State<SmsTransactionsScreen> {
         title: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(
-              'SMS Transactions',
-              style: GoogleFonts.roboto(
-                fontSize: 20,
-                fontWeight: FontWeight.w600,
-                color: Colors.black87,
-              ),
+            Row(
+              children: [
+                Flexible(
+                  child: Text(
+                    'SMS Transactions',
+                    style: GoogleFonts.montserrat(
+                      fontSize: 20,
+                      fontWeight: FontWeight.w600,
+                      color: Colors.black87,
+                    ),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+                if (_isCheckingNewSms) ...[
+                  SizedBox(width: 8),
+                  SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      valueColor: AlwaysStoppedAnimation<Color>(Color(0xFF6C5CE7)),
+                    ),
+                  ),
+                ],
+              ],
             ),
             if (_currentAccount != null)
               Text(
                 '${_currentAccount!.bankName} - ${_currentAccount!.maskedAccountNumber}',
-                style: GoogleFonts.roboto(
+                style: GoogleFonts.montserrat(
                   fontSize: 12,
                   color: Colors.grey[600],
                 ),
+                overflow: TextOverflow.ellipsis,
               ),
           ],
         ),
@@ -393,9 +813,49 @@ class _SmsTransactionsScreenState extends State<SmsTransactionsScreen> {
           onPressed: () => Navigator.pop(context),
         ),
         actions: [
+          // Manual refresh button with new SMS indicator
+          Stack(
+            children: [
+              IconButton(
+                icon: Icon(
+                  _isCheckingNewSms ? Icons.sync : Icons.refresh,
+                  color: _isCheckingNewSms ? Color(0xFF6C5CE7) : Colors.black54,
+                ),
+                onPressed: _isCheckingNewSms ? null : _manualRefresh,
+                tooltip: _isCheckingNewSms ? 'Checking for new SMS...' : 'Scan for new SMS',
+              ),
+              if (_newSmsCount > 0)
+                Positioned(
+                  right: 8,
+                  top: 8,
+                  child: Container(
+                    padding: EdgeInsets.all(2),
+                    decoration: BoxDecoration(
+                      color: Colors.red,
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    constraints: BoxConstraints(
+                      minWidth: 16,
+                      minHeight: 16,
+                    ),
+                    child: Text(
+                      '$_newSmsCount',
+                      style: GoogleFonts.montserrat(
+                        color: Colors.white,
+                        fontSize: 10,
+                        fontWeight: FontWeight.bold,
+                      ),
+                      textAlign: TextAlign.center,
+                    ),
+                  ),
+                ),
+            ],
+          ),
+          // Settings/Info button
           IconButton(
-            icon: Icon(Icons.refresh, color: Colors.black54),
-            onPressed: _loadTransactions,
+            icon: Icon(Icons.info_outline, color: Colors.black54),
+            onPressed: _showInfoDialog,
+            tooltip: 'SMS Processing Info',
           ),
         ],
       ),
@@ -403,7 +863,7 @@ class _SmsTransactionsScreenState extends State<SmsTransactionsScreen> {
           ? _buildNoAccountView()
           : _isLoading
               ? _buildLoadingView()
-              : _hasDatabaseTransactions || _hasPermission
+              : _hasPermission
                   ? _buildTransactionsList()
                   : _buildPermissionDeniedView(),
     );
@@ -461,9 +921,7 @@ class _SmsTransactionsScreenState extends State<SmsTransactionsScreen> {
             ),
             SizedBox(height: 20),
             Text(
-              _hasDatabaseTransactions 
-                  ? 'Loading Transactions...'
-                  : 'SMS Permission Required',
+              'SMS Permission Required',
               style: GoogleFonts.roboto(
                 fontSize: 24,
                 fontWeight: FontWeight.bold,
@@ -473,9 +931,7 @@ class _SmsTransactionsScreenState extends State<SmsTransactionsScreen> {
             ),
             SizedBox(height: 10),
             Text(
-              _hasDatabaseTransactions
-                  ? 'Demo transactions are available. Please wait while we load them.'
-                  : 'To read bank transaction SMS messages, please grant SMS permission.',
+              'To read bank transaction SMS messages, please grant SMS permission.',
               style: GoogleFonts.roboto(
                 fontSize: 16,
                 color: Colors.grey[600],
@@ -495,7 +951,7 @@ class _SmsTransactionsScreenState extends State<SmsTransactionsScreen> {
                 ),
               ),
               child: Text(
-                _hasDatabaseTransactions ? 'Reload Transactions' : 'Grant Permission',
+                'Grant Permission',
                 style: GoogleFonts.roboto(
                   fontSize: 16,
                   fontWeight: FontWeight.w600,
@@ -532,88 +988,145 @@ class _SmsTransactionsScreenState extends State<SmsTransactionsScreen> {
   Widget _buildTransactionsList() {
     return Column(
       children: [
-        // Date selector
+        // View Mode Selector
         Container(
           padding: EdgeInsets.all(16),
           child: Row(
             children: [
+              Text(
+                'View Mode:',
+                style: GoogleFonts.montserrat(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w600,
+                  color: Colors.black87,
+                ),
+              ),
+              SizedBox(width: 12),
               Expanded(
-                child: GestureDetector(
-                  onTap: _showDatePicker,
-                  child: Container(
-                    padding: EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                    decoration: BoxDecoration(
-                      color: Colors.white,
-                      border: Border.all(color: Color(0xFF6C5CE7)),
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    child: Row(
-                      children: [
-                        Icon(Icons.calendar_today, color: Color(0xFF6C5CE7), size: 18),
-                        SizedBox(width: 8),
-                        Expanded(
-                          child: Text(
-                            DateFormat('EEEE, MMM dd, yyyy').format(_selectedDate),
-                            style: GoogleFonts.roboto(
-                              fontSize: 14,
-                              fontWeight: FontWeight.w500,
-                              color: Colors.black87,
-                            ),
-                          ),
+                child: Container(
+                  padding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    border: Border.all(color: Color(0xFF6C5CE7)),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: DropdownButtonHideUnderline(
+                    child: DropdownButton<String>(
+                      value: _viewMode,
+                      isExpanded: true,
+                      icon: Icon(Icons.arrow_drop_down, color: Color(0xFF6C5CE7)),
+                      style: GoogleFonts.montserrat(
+                        fontSize: 14,
+                        color: Colors.black87,
+                      ),
+                      onChanged: (String? newValue) {
+                        if (newValue != null) {
+                          _onViewModeChanged(newValue);
+                        }
+                      },
+                      items: [
+                        DropdownMenuItem(
+                          value: 'all',
+                          child: Text('Show All (Latest First)'),
                         ),
-                        Icon(Icons.arrow_drop_down, color: Color(0xFF6C5CE7)),
+                        DropdownMenuItem(
+                          value: 'by_date',
+                          child: Text('Show by Date'),
+                        ),
                       ],
                     ),
                   ),
                 ),
               ),
-              SizedBox(width: 12),
-              // Date navigation buttons
-              Row(
-                children: [
-                  GestureDetector(
-                    onTap: () {
-                      setState(() {
-                        _selectedDate = _selectedDate.subtract(Duration(days: 1));
-                        _applyFilter();
-                      });
-                    },
-                    child: Container(
-                      padding: EdgeInsets.all(8),
-                      decoration: BoxDecoration(
-                        color: Colors.white,
-                        border: Border.all(color: Colors.grey[300]!),
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                      child: Icon(Icons.chevron_left, color: Colors.grey[600], size: 18),
-                    ),
-                  ),
-                  SizedBox(width: 4),
-                  GestureDetector(
-                    onTap: () {
-                      final tomorrow = _selectedDate.add(Duration(days: 1));
-                      if (tomorrow.isBefore(DateTime.now().add(Duration(days: 1)))) {
-                        setState(() {
-                          _selectedDate = tomorrow;
-                          _applyFilter();
-                        });
-                      }
-                    },
-                    child: Container(
-                      padding: EdgeInsets.all(8),
-                      decoration: BoxDecoration(
-                        color: Colors.white,
-                        border: Border.all(color: Colors.grey[300]!),
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                      child: Icon(Icons.chevron_right, color: Colors.grey[600], size: 18),
-                    ),
-                  ),
-                ],
-              ),
             ],
           ),
         ),
+
+        // Date selector - conditional based on view mode
+        if (_viewMode == 'by_date') ...[
+          Container(
+            padding: EdgeInsets.symmetric(horizontal: 16),
+            child: Row(
+              children: [
+                Expanded(
+                  child: GestureDetector(
+                    onTap: _showDatePicker,
+                    child: Container(
+                      padding: EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        border: Border.all(color: Color(0xFF6C5CE7)),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Row(
+                        children: [
+                          Icon(Icons.calendar_today, color: Color(0xFF6C5CE7), size: 18),
+                          SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              DateFormat('EEEE, MMM dd, yyyy').format(_selectedDate),
+                              style: GoogleFonts.montserrat(
+                                fontSize: 14,
+                                fontWeight: FontWeight.w500,
+                                color: Colors.black87,
+                              ),
+                            ),
+                          ),
+                          Icon(Icons.arrow_drop_down, color: Color(0xFF6C5CE7)),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+                SizedBox(width: 12),
+                // Date navigation buttons
+                Row(
+                  children: [
+                    GestureDetector(
+                      onTap: () {
+                        setState(() {
+                          _selectedDate = _selectedDate.subtract(Duration(days: 1));
+                          _applyFilter();
+                        });
+                      },
+                      child: Container(
+                        padding: EdgeInsets.all(8),
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          border: Border.all(color: Colors.grey[300]!),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Icon(Icons.chevron_left, color: Colors.grey[600], size: 18),
+                      ),
+                    ),
+                    SizedBox(width: 4),
+                    GestureDetector(
+                      onTap: () {
+                        final tomorrow = _selectedDate.add(Duration(days: 1));
+                        if (tomorrow.isBefore(DateTime.now().add(Duration(days: 1)))) {
+                          setState(() {
+                            _selectedDate = tomorrow;
+                            _applyFilter();
+                          });
+                        }
+                      },
+                      child: Container(
+                        padding: EdgeInsets.all(8),
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          border: Border.all(color: Colors.grey[300]!),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Icon(Icons.chevron_right, color: Colors.grey[600], size: 18),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+          SizedBox(height: 16),
+        ],
         
         // Filter buttons
         Container(
@@ -639,11 +1152,16 @@ class _SmsTransactionsScreenState extends State<SmsTransactionsScreen> {
           padding: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
           child: Row(
             children: [
-              Text(
-                '${_transactions.length} transactions found for ${DateFormat('MMM dd, yyyy').format(_selectedDate)}',
-                style: GoogleFonts.roboto(
-                  fontSize: 14,
-                  color: Colors.grey[600],
+              Expanded(
+                child: Text(
+                  _viewMode == 'all' 
+                      ? '${_transactions.length} transactions found (all dates)'
+                      : '${_transactions.length} transactions found for ${DateFormat('MMM dd, yyyy').format(_selectedDate)}',
+                  style: GoogleFonts.montserrat(
+                    fontSize: 14,
+                    color: Colors.grey[600],
+                  ),
+                  overflow: TextOverflow.ellipsis,
                 ),
               ),
             ],
@@ -733,9 +1251,9 @@ class _SmsTransactionsScreenState extends State<SmsTransactionsScreen> {
           SizedBox(height: 20),
           Text(
             hasDataOnOtherDates 
-                ? 'No transactions for this date'
+                ? (_viewMode == 'all' ? 'No matching transactions' : 'No transactions for this date')
                 : 'No transactions found',
-            style: GoogleFonts.roboto(
+            style: GoogleFonts.montserrat(
               fontSize: 18,
               fontWeight: FontWeight.w500,
               color: Colors.grey[600],
@@ -744,15 +1262,17 @@ class _SmsTransactionsScreenState extends State<SmsTransactionsScreen> {
           SizedBox(height: 8),
           Text(
             hasDataOnOtherDates
-                ? 'No ${_filter == 'all' ? '' : _filter + ' '}transactions found for ${DateFormat('MMM dd, yyyy').format(_selectedDate)}.'
+                ? (_viewMode == 'all' 
+                    ? 'No ${_filter == 'all' ? '' : _filter + ' '}transactions found matching your criteria.'
+                    : 'No ${_filter == 'all' ? '' : _filter + ' '}transactions found for ${DateFormat('MMM dd, yyyy').format(_selectedDate)}.')
                 : 'No ${_filter == 'all' ? '' : _filter + ' '}transactions found for this account.',
-            style: GoogleFonts.roboto(
+            style: GoogleFonts.montserrat(
               fontSize: 14,
               color: Colors.grey[500],
             ),
             textAlign: TextAlign.center,
           ),
-          if (hasDataOnOtherDates) ...[
+          if (hasDataOnOtherDates && _viewMode == 'by_date') ...[
             SizedBox(height: 20),
             ElevatedButton.icon(
               onPressed: () async {
@@ -766,6 +1286,27 @@ class _SmsTransactionsScreenState extends State<SmsTransactionsScreen> {
               },
               icon: Icon(Icons.history, size: 18),
               label: Text('Show Recent Transactions'),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Color(0xFF6C5CE7),
+                foregroundColor: Colors.white,
+                padding: EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
+              ),
+            ),
+          ],
+          if (hasDataOnOtherDates && _viewMode == 'all') ...[
+            SizedBox(height: 20),
+            ElevatedButton.icon(
+              onPressed: () {
+                setState(() {
+                  _filter = 'all';
+                  _applyFilter();
+                });
+              },
+              icon: Icon(Icons.visibility, size: 18),
+              label: Text('Show All Transactions'),
               style: ElevatedButton.styleFrom(
                 backgroundColor: Color(0xFF6C5CE7),
                 foregroundColor: Colors.white,
@@ -793,6 +1334,11 @@ class _SmsTransactionsScreenState extends State<SmsTransactionsScreen> {
       statusIcon = Icons.cancel;
     }
 
+    // Determine category info for consistent display
+    final categoryName = _getCategoryNameFromTransaction(transaction);
+    final categoryIcon = IconData(_getCategoryIconFromTransaction(transaction), fontFamily: 'MaterialIcons');
+    final categoryColor = Color(_getCategoryColorFromTransaction(transaction));
+
     return Container(
       margin: EdgeInsets.only(bottom: 12),
       padding: EdgeInsets.all(16),
@@ -803,7 +1349,7 @@ class _SmsTransactionsScreenState extends State<SmsTransactionsScreen> {
           BoxShadow(
             color: Colors.black.withOpacity(0.05),
             blurRadius: 5,
-            offset: Offset(0, 2),
+            offset: Offset(0, 1),
           ),
         ],
         border: transaction.isPending 
@@ -813,95 +1359,112 @@ class _SmsTransactionsScreenState extends State<SmsTransactionsScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Header with bank name, amount, and status
+          // Main transaction row - matching dashboard style
           Row(
             children: [
+              Container(
+                padding: EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: categoryColor.withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Icon(
+                  categoryIcon,
+                  color: categoryColor,
+                  size: 20,
+                ),
+              ),
+              SizedBox(width: 12),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
-                      transaction.bankName ?? 'Unknown Bank',
-                      style: GoogleFonts.roboto(
-                        fontSize: 16,
-                        fontWeight: FontWeight.w600,
-                        color: Colors.black87,
-                      ),
-                    ),
-                    if (transaction.accountNumber != null)
-                      Text(
-                        'Account: ${transaction.accountNumber}',
-                        style: GoogleFonts.roboto(
-                          fontSize: 12,
-                          color: Colors.grey[600],
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            categoryName,
+                            style: GoogleFonts.montserrat(
+                              fontWeight: FontWeight.w500,
+                              fontSize: 16,
+                              color: Color(0xFF6C5CE7),
+                            ),
+                          ),
                         ),
-                      ),
-                  ],
-                ),
-              ),
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.end,
-                children: [
-                  Container(
-                    padding: EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                    decoration: BoxDecoration(
-                      color: transaction.isDebit 
-                          ? Colors.red.withOpacity(0.1)
-                          : Colors.green.withOpacity(0.1),
-                      borderRadius: BorderRadius.circular(6),
+                        // Status indicator
+                        Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(statusIcon, size: 14, color: statusColor),
+                            SizedBox(width: 4),
+                            Text(
+                              transaction.status.toUpperCase(),
+                              style: GoogleFonts.montserrat(
+                                fontSize: 10,
+                                fontWeight: FontWeight.w600,
+                                color: statusColor,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
                     ),
-                    child: Text(
-                      transaction.formattedAmount,
-                      style: GoogleFonts.roboto(
+                    SizedBox(height: 4),
+                    Text(
+                      transaction.userRemarks ?? 'SMS Transaction',
+                      style: GoogleFonts.montserrat(
+                        color: Colors.grey[600],
                         fontSize: 14,
-                        fontWeight: FontWeight.w600,
-                        color: transaction.isDebit ? Colors.red : Colors.green,
                       ),
                     ),
-                  ),
-                  SizedBox(height: 4),
-                  Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(statusIcon, size: 14, color: statusColor),
-                      SizedBox(width: 4),
+                    if (transaction.merchant != null) ...[
+                      SizedBox(height: 2),
                       Text(
-                        transaction.status.toUpperCase(),
-                        style: GoogleFonts.roboto(
-                          fontSize: 10,
-                          fontWeight: FontWeight.w600,
-                          color: statusColor,
+                        'at ${transaction.merchant}',
+                        style: GoogleFonts.montserrat(
+                          color: Colors.grey[500],
+                          fontSize: 12,
                         ),
                       ),
                     ],
-                  ),
-                ],
+                  ],
+                ),
               ),
-            ],
-          ),
-          SizedBox(height: 12),
-
-          // Transaction details
-          Row(
-            children: [
-              Icon(
-                transaction.isDebit ? Icons.arrow_upward : Icons.arrow_downward,
-                size: 16,
-                color: transaction.isDebit ? Colors.red : Colors.green,
-              ),
-              SizedBox(width: 4),
               Text(
-                transaction.transactionType?.toUpperCase() ?? 'TRANSACTION',
-                style: GoogleFonts.roboto(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w500,
+                transaction.isDebit 
+                    ? '-${transaction.formattedAmount}'
+                    : '+${transaction.formattedAmount}',
+                style: GoogleFonts.montserrat(
+                  fontWeight: FontWeight.w600,
+                  fontSize: 16,
                   color: transaction.isDebit ? Colors.red : Colors.green,
                 ),
               ),
-              Spacer(),
+            ],
+          ),
+          
+          SizedBox(height: 10),
+          Divider(height: 1, color: Colors.grey[200]),
+          SizedBox(height: 10),
+          
+          // Bottom row with reference and time - matching dashboard style
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              if (transaction.referenceNumber != null)
+                Expanded(
+                  child: Text(
+                    'Ref: ${transaction.referenceNumber}',
+                    style: GoogleFonts.montserrat(
+                      fontSize: 12,
+                      color: Colors.grey[500],
+                    ),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
               Text(
-                transaction.formattedDate,
-                style: GoogleFonts.roboto(
+                DateFormat('hh:mm a').format(transaction.date),
+                style: GoogleFonts.montserrat(
                   fontSize: 12,
                   color: Colors.grey[600],
                 ),
@@ -909,17 +1472,7 @@ class _SmsTransactionsScreenState extends State<SmsTransactionsScreen> {
             ],
           ),
 
-          if (transaction.merchant != null) ...[
-            SizedBox(height: 8),
-            Text(
-              'Merchant: ${transaction.merchant}',
-              style: GoogleFonts.roboto(
-                fontSize: 13,
-                color: Colors.grey[700],
-              ),
-            ),
-          ],
-
+          // Additional SMS-specific information
           if (transaction.userRemarks != null) ...[
             SizedBox(height: 8),
             Container(
@@ -936,11 +1489,13 @@ class _SmsTransactionsScreenState extends State<SmsTransactionsScreen> {
                   SizedBox(width: 6),
                   Expanded(
                     child: Text(
-                      'Remarks: ${transaction.userRemarks}',
-                      style: GoogleFonts.roboto(
+                      'User Remarks: ${transaction.userRemarks}',
+                      style: GoogleFonts.montserrat(
                         fontSize: 12,
                         color: Colors.blue[700],
                       ),
+                      overflow: TextOverflow.ellipsis,
+                      maxLines: 2,
                     ),
                   ),
                 ],
@@ -963,7 +1518,8 @@ class _SmsTransactionsScreenState extends State<SmsTransactionsScreen> {
                   ),
                   label: Text(
                     transaction.userRemarks != null ? 'Edit Remarks' : 'Add Remarks',
-                    style: GoogleFonts.roboto(fontSize: 12),
+                    style: GoogleFonts.montserrat(fontSize: 12),
+                    overflow: TextOverflow.ellipsis,
                   ),
                   style: OutlinedButton.styleFrom(
                     foregroundColor: Color(0xFF6C5CE7),
@@ -1021,7 +1577,7 @@ class _SmsTransactionsScreenState extends State<SmsTransactionsScreen> {
           ExpansionTile(
             title: Text(
               'View SMS Details',
-              style: GoogleFonts.roboto(
+              style: GoogleFonts.montserrat(
                 fontSize: 12,
                 color: Color(0xFF6C5CE7),
               ),
@@ -1037,11 +1593,12 @@ class _SmsTransactionsScreenState extends State<SmsTransactionsScreen> {
                 ),
                 child: Text(
                   transaction.rawMessage,
-                  style: GoogleFonts.roboto(
+                  style: GoogleFonts.montserrat(
                     fontSize: 12,
                     color: Colors.grey[700],
                     height: 1.4,
                   ),
+                  softWrap: true,
                 ),
               ),
             ],
@@ -1049,5 +1606,83 @@ class _SmsTransactionsScreenState extends State<SmsTransactionsScreen> {
         ],
       ),
     );
+  }
+
+  // Helper methods for category determination (matching dashboard logic)
+  String _getCategoryNameFromTransaction(SmsTransactionDB smsTransaction) {
+    if (smsTransaction.merchant != null) {
+      final merchant = smsTransaction.merchant!.toLowerCase();
+      
+      // Food & Dining
+      if (merchant.contains('restaurant') || merchant.contains('cafe') || 
+          merchant.contains('food') || merchant.contains('pizza') ||
+          merchant.contains('mcdonalds') || merchant.contains('kfc') ||
+          merchant.contains('swiggy') || merchant.contains('zomato')) {
+        return 'Food & Dining';
+      }
+      
+      // Shopping
+      if (merchant.contains('amazon') || merchant.contains('flipkart') ||
+          merchant.contains('shop') || merchant.contains('store') ||
+          merchant.contains('mall') || merchant.contains('retail')) {
+        return 'Shopping';
+      }
+      
+      // Transportation
+      if (merchant.contains('uber') || merchant.contains('ola') ||
+          merchant.contains('petrol') || merchant.contains('fuel') ||
+          merchant.contains('transport') || merchant.contains('metro')) {
+        return 'Transportation';
+      }
+      
+      // ATM/Bank
+      if (merchant.contains('atm') || merchant.contains('bank') ||
+          merchant.contains('branch')) {
+        return 'ATM/Bank';
+      }
+    }
+    
+    // Default category based on transaction type
+    return smsTransaction.isDebit ? 'General Expense' : 'Income';
+  }
+
+  // Helper method to get category icon
+  int _getCategoryIconFromTransaction(SmsTransactionDB smsTransaction) {
+    final categoryName = _getCategoryNameFromTransaction(smsTransaction);
+    
+    switch (categoryName) {
+      case 'Food & Dining':
+        return Icons.restaurant.codePoint;
+      case 'Shopping':
+        return Icons.shopping_bag.codePoint;
+      case 'Transportation':
+        return Icons.directions_car.codePoint;
+      case 'ATM/Bank':
+        return Icons.account_balance.codePoint;
+      case 'Income':
+        return Icons.attach_money.codePoint;
+      default:
+        return Icons.payment.codePoint;
+    }
+  }
+
+  // Helper method to get category color
+  int _getCategoryColorFromTransaction(SmsTransactionDB smsTransaction) {
+    final categoryName = _getCategoryNameFromTransaction(smsTransaction);
+    
+    switch (categoryName) {
+      case 'Food & Dining':
+        return Colors.orange.value;
+      case 'Shopping':
+        return Colors.purple.value;
+      case 'Transportation':
+        return Colors.blue.value;
+      case 'ATM/Bank':
+        return Colors.green.value;
+      case 'Income':
+        return Colors.green.value;
+      default:
+        return Colors.grey.value;
+    }
   }
 } 

@@ -139,4 +139,146 @@ class AccountService {
     await prefs.remove(_accountsKey);
     await prefs.remove(_activeAccountKey);
   }
+
+  // Update account balance based on SMS transactions
+  Future<void> updateBalanceFromSmsTransactions(String accountId, List<dynamic> smsTransactions) async {
+    if (smsTransactions.isEmpty) return;
+    
+    try {
+      print('💰 Updating account balance from ${smsTransactions.length} SMS transactions');
+      
+      // Sort transactions by date (newest first)
+      smsTransactions.sort((a, b) {
+        DateTime dateA = a is Map ? DateTime.parse(a['date']) : a.date;
+        DateTime dateB = b is Map ? DateTime.parse(b['date']) : b.date;
+        return dateB.compareTo(dateA);
+      });
+      
+      // Method 1: Try to find the latest SMS with balance information
+      double? latestBalance = _extractLatestBalanceFromSms(smsTransactions);
+      
+      if (latestBalance != null) {
+        print('✅ Found latest balance from SMS: ₹$latestBalance');
+        await updateAccountBalance(accountId, latestBalance);
+        return;
+      }
+      
+      // Method 2: Calculate balance by applying transactions to current balance
+      print('⚠️ No balance found in SMS, calculating from transactions...');
+      await _calculateBalanceFromTransactions(accountId, smsTransactions);
+      
+    } catch (e) {
+      print('❌ Error updating balance from SMS: $e');
+    }
+  }
+  
+  // Extract the latest balance from SMS transactions
+  double? _extractLatestBalanceFromSms(List<dynamic> smsTransactions) {
+    for (var transaction in smsTransactions) {
+      double? balance;
+      
+      if (transaction is Map) {
+        // Handle database SMS transaction
+        final rawMessage = transaction['rawMessage'] as String?;
+        if (rawMessage != null) {
+          balance = _parseBalanceFromSmsText(rawMessage);
+        }
+      } else {
+        // Handle SmsTransaction object
+        if (transaction.balance != null) {
+          balance = transaction.balance;
+        } else {
+          balance = _parseBalanceFromSmsText(transaction.message);
+        }
+      }
+      
+      if (balance != null) {
+        print('💰 Found balance in SMS: ₹$balance');
+        return balance;
+      }
+    }
+    
+    return null;
+  }
+  
+  // Parse balance from SMS text
+  double? _parseBalanceFromSmsText(String smsText) {
+    final patterns = [
+      // Available balance patterns
+      r'(?:avl|available|avail)\s*(?:bal|balance)(?:\s*:)?\s*(?:rs\.?|inr|₹)?\s*(\d+(?:,\d+)*(?:\.\d{2})?)',
+      r'(?:bal|balance)(?:\s*:)?\s*(?:rs\.?|inr|₹)?\s*(\d+(?:,\d+)*(?:\.\d{2})?)',
+      // Current balance patterns
+      r'(?:current|curr)\s*(?:bal|balance)(?:\s*:)?\s*(?:rs\.?|inr|₹)?\s*(\d+(?:,\d+)*(?:\.\d{2})?)',
+      // Balance after transaction
+      r'(?:balance|bal)\s*(?:after|is|now)(?:\s*:)?\s*(?:rs\.?|inr|₹)?\s*(\d+(?:,\d+)*(?:\.\d{2})?)',
+      // Remaining balance
+      r'(?:remaining|rem)\s*(?:bal|balance)(?:\s*:)?\s*(?:rs\.?|inr|₹)?\s*(\d+(?:,\d+)*(?:\.\d{2})?)',
+    ];
+
+    for (final pattern in patterns) {
+      final regex = RegExp(pattern, caseSensitive: false);
+      final match = regex.firstMatch(smsText);
+      if (match != null) {
+        final balanceStr = match.group(1)?.replaceAll(',', '');
+        final balance = double.tryParse(balanceStr ?? '');
+        if (balance != null) {
+          return balance;
+        }
+      }
+    }
+    
+    return null;
+  }
+  
+  // Calculate balance by applying transactions to current balance
+  Future<void> _calculateBalanceFromTransactions(String accountId, List<dynamic> smsTransactions) async {
+    final account = await getActiveAccount();
+    if (account == null || account.id != accountId) return;
+    
+    double currentBalance = account.currentBalance;
+    print('💰 Starting balance: ₹$currentBalance');
+    
+    // Apply transactions in chronological order (oldest first)
+    final reversedTransactions = smsTransactions.reversed.toList();
+    
+    for (var transaction in reversedTransactions) {
+      double? amount;
+      String? transactionType;
+      DateTime? transactionDate;
+      
+      if (transaction is Map) {
+        amount = transaction['amount']?.toDouble();
+        transactionType = transaction['transactionType'];
+        transactionDate = DateTime.tryParse(transaction['date'] ?? '');
+      } else {
+        amount = transaction.amount;
+        transactionType = transaction.transactionType;
+        transactionDate = transaction.date;
+      }
+      
+      if (amount != null && transactionType != null) {
+        if (transactionType.toLowerCase() == 'debit') {
+          currentBalance -= amount;
+          print('💸 Applied debit: -₹$amount, new balance: ₹$currentBalance');
+        } else if (transactionType.toLowerCase() == 'credit') {
+          currentBalance += amount;
+          print('💰 Applied credit: +₹$amount, new balance: ₹$currentBalance');
+        }
+      }
+    }
+    
+    print('✅ Final calculated balance: ₹$currentBalance');
+    await updateAccountBalance(accountId, currentBalance);
+  }
+  
+  // Update balance from latest accepted SMS transaction
+  Future<void> updateBalanceFromLatestAcceptedSms(String accountId) async {
+    try {
+      // This would need to be called with database service
+      // For now, we'll add this as a placeholder that can be called from the SMS screen
+      print('🔄 Updating balance from latest accepted SMS for account: $accountId');
+    } catch (e) {
+      print('❌ Error updating balance from latest SMS: $e');
+    }
+  }
 } 

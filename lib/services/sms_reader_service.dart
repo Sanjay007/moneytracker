@@ -2,6 +2,8 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:telephony/telephony.dart';
 import '../models/sms_transaction.dart';
 import 'package:intl/intl.dart';
+import 'dart:convert';
+import 'package:crypto/crypto.dart';
 
 class SmsReaderService {
   final Telephony telephony = Telephony.instance;
@@ -17,7 +19,69 @@ class SmsReaderService {
     return await Permission.sms.isGranted;
   }
 
-  // Read all SMS messages and filter bank transactions
+  // Create consistent SMS ID based on content hash + date + sender
+  String _createSmsId(SmsMessage message) {
+    final body = message.body ?? '';
+    final address = message.address ?? '';
+    final date = message.date?.toString() ?? '0';
+    
+    // Create a unique string combining message content, sender, and timestamp
+    final uniqueString = '$body|$address|$date';
+    
+    // Generate MD5 hash for consistent ID
+    final bytes = utf8.encode(uniqueString);
+    final hash = md5.convert(bytes);
+    
+    return 'sms_${hash.toString()}';
+  }
+
+  // Get new SMS messages since a specific date
+  Future<List<SmsTransaction>> getNewSmsTransactionsSince(DateTime? lastProcessedDate, String accountNumber) async {
+    if (!await hasSmsPermission()) {
+      throw Exception('SMS permission not granted');
+    }
+
+    try {
+      print('📱 Reading SMS messages since: ${lastProcessedDate?.toIso8601String() ?? "beginning"}');
+      
+      // Get all SMS messages (we'll filter by date ourselves)
+      final messages = await telephony.getInboxSms(
+        columns: [SmsColumn.ADDRESS, SmsColumn.BODY, SmsColumn.DATE],
+        sortOrder: [OrderBy(SmsColumn.DATE, sort: Sort.DESC)],
+      );
+
+      print('📬 Found ${messages.length} total SMS messages');
+      List<SmsTransaction> newTransactions = [];
+      int processedCount = 0;
+      int newCount = 0;
+      
+      for (var message in messages) {
+        final messageDate = DateTime.fromMillisecondsSinceEpoch(message.date ?? 0);
+        
+        // Skip messages older than last processed date
+        if (lastProcessedDate != null && messageDate.isBefore(lastProcessedDate)) {
+          continue;
+        }
+        
+        processedCount++;
+        
+        final transaction = _parseTransactionFromSms(message);
+        if (transaction != null && _isAccountMatch(transaction, accountNumber)) {
+          newTransactions.add(transaction);
+          newCount++;
+          print('✅ Found new matching SMS: ${transaction.formattedAmount} on ${DateFormat('dd-MMM-yy').format(transaction.date)}');
+        }
+      }
+
+      print('📊 Processed $processedCount messages since last check, found $newCount new matching transactions');
+      return newTransactions;
+    } catch (e) {
+      print('❌ Failed to read new SMS: $e');
+      throw Exception('Failed to read new SMS: $e');
+    }
+  }
+
+  // Read all SMS messages and filter bank transactions (original method for backward compatibility)
   Future<List<SmsTransaction>> getAllBankTransactions() async {
     if (!await hasSmsPermission()) {
       throw Exception('SMS permission not granted');
@@ -161,13 +225,17 @@ class SmsReaderService {
     // Try to extract transaction date from SMS content
     final transactionDate = _extractTransactionDate(body) ?? messageDate;
 
+    // Generate consistent ID
+    final smsId = _createSmsId(message);
+
     print('   💰 Amount: ₹$amount ($transactionType)');
     print('   🏪 Merchant: $merchant');
     print('   📅 Transaction Date: ${DateFormat('dd-MMM-yy').format(transactionDate)}');
     print('   📋 Reference: $referenceNumber');
+    print('   🆔 SMS ID: $smsId');
 
     return SmsTransaction(
-      id: '${message.date}_${message.address}',
+      id: smsId, // Use consistent ID instead of timestamp-based
       bankName: bankName,
       message: body,
       date: transactionDate,
@@ -464,18 +532,66 @@ class SmsReaderService {
 
   // Extract reference number
   String? _extractReferenceNumber(String body) {
+    print('   🔍 Extracting reference number from SMS...');
+    
     final patterns = [
-      r'(?:ref|reference|txn|transaction)(?:\s*no\.?)?(?:\s*:)?\s*([A-Z0-9]+)',
-      r'(?:utr|rrn)(?:\s*:)?\s*([A-Z0-9]+)',
+      // Enhanced patterns for transaction references
+      // NEFT pattern: NEFT:675656/ or NEFT-675656 or NEFT 675656
+      r'NEFT[:\-\s]+([A-Z0-9]+)(?:\/|$|\s)',
+      // UPI pattern: UPI:123456/ or UPI-123456 or UPI 123456
+      r'UPI[:\-\s]+([A-Z0-9]+)(?:\/|$|\s)',
+      // IMPS pattern: IMPS:789012/ or IMPS-789012 or IMPS 789012
+      r'IMPS[:\-\s]+([A-Z0-9]+)(?:\/|$|\s)',
+      // RTGS pattern: RTGS:456789/ or RTGS-456789 or RTGS 456789
+      r'RTGS[:\-\s]+([A-Z0-9]+)(?:\/|$|\s)',
+      // General transaction ID patterns
+      r'(?:ref|reference|txn|transaction)(?:\s*no\.?)?(?:\s*[:\-])?\s*([A-Z0-9]{6,})',
+      r'(?:utr|rrn)(?:\s*[:\-])?\s*([A-Z0-9]{6,})',
+      // Transaction ID in format: TXN ID: 123456789
+      r'(?:txn\s*id|transaction\s*id)(?:\s*[:\-])?\s*([A-Z0-9]{6,})',
+      // Reference number in format: Ref No: ABC123456
+      r'(?:ref\s*no|reference\s*no)(?:\s*[:\-])?\s*([A-Z0-9]{6,})',
+      // Bank specific patterns
+      r'(?:bank\s*ref|bank\s*reference)(?:\s*[:\-])?\s*([A-Z0-9]{6,})',
+      // Generic alphanumeric patterns that look like transaction IDs (6+ chars)
+      r'(?:^|\s)([A-Z0-9]{8,})(?:\s|$)',
     ];
 
-    for (final pattern in patterns) {
+    for (int i = 0; i < patterns.length; i++) {
+      final pattern = patterns[i];
       final regex = RegExp(pattern, caseSensitive: false);
-      final match = regex.firstMatch(body);
-      if (match != null) {
-        return match.group(1);
+      final matches = regex.allMatches(body);
+      
+      for (final match in matches) {
+        String? refNumber = match.group(1);
+        if (refNumber != null && refNumber.length >= 6) {
+          
+          // Skip if this looks like an account number or phone number
+          if (refNumber.length == 10 && refNumber.startsWith(RegExp(r'[6-9]'))) {
+            continue; // Likely a phone number
+          }
+          
+          // Skip if this is just numbers and looks like amount or account
+          if (refNumber.length <= 8 && RegExp(r'^\d+$').hasMatch(refNumber)) {
+            final numValue = int.tryParse(refNumber);
+            if (numValue != null && numValue < 1000000) {
+              continue; // Likely an amount or short number
+            }
+          }
+          
+          // Prefer transaction type specific patterns (NEFT, UPI, IMPS, RTGS)
+          if (i <= 3) {
+            print('   ✅ Found transaction reference (${pattern.split('[')[0]}): $refNumber');
+            return refNumber;
+          } else if (refNumber.length >= 8) {
+            print('   ✅ Found reference number (pattern $i): $refNumber');
+            return refNumber;
+          }
+        }
       }
     }
+    
+    print('   ❌ No reference number found in SMS');
     return null;
   }
 } 
